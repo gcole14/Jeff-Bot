@@ -13,7 +13,7 @@ from config import (
     RANK_CHECK_INTERVAL_HOURS, RANK_HISTORY_FILE,
 )
 from riot_api import RiotAPI
-from stats import StatsAggregator, RankTracker
+from stats import StatsAggregator, RankTracker, resolve_riot_id
 from embeds import (
     build_daily_embed, build_weekly_embed, build_player_snapshot_embed,
     build_promotion_embed, build_versus_embed, build_mastery_embed,
@@ -138,26 +138,37 @@ async def force_weekly(ctx):
 
 @bot.command(name="stats")
 async def player_stats(ctx, *, riot_id: str):
-    """Look up a specific player. Usage: !stats Name#TAG"""
-    await ctx.send(f"⏳ Looking up **{riot_id}**...")
+    """Look up a specific player. Usage: !stats Name  (or Name#TAG)"""
     try:
-        data = await aggregator.get_player_snapshot(riot_id)
+        resolved = resolve_riot_id(riot_id)
+    except ValueError as e:
+        await ctx.send(f"❌ {e}")
+        return
+    await ctx.send(f"⏳ Looking up **{resolved}**...")
+    try:
+        data = await aggregator.get_player_snapshot(resolved)
         embed = build_player_snapshot_embed(data)
         await ctx.send(embed=embed)
     except Exception as e:
-        await ctx.send(f"❌ Could not fetch stats for `{riot_id}`: {e}")
+        await ctx.send(f"❌ Could not fetch stats for `{resolved}`: {e}")
 
 
 @bot.command(name="versus")
 async def versus(ctx, player1: str, player2: str):
-    """Head-to-head comparison. Usage: !versus Name1#TAG Name2#TAG"""
-    await ctx.send(f"⏳ Comparing **{player1}** vs **{player2}**...")
+    """Head-to-head comparison. Usage: !versus Name1 Name2"""
+    try:
+        p1 = resolve_riot_id(player1)
+        p2 = resolve_riot_id(player2)
+    except ValueError as e:
+        await ctx.send(f"❌ {e}")
+        return
+    await ctx.send(f"⏳ Comparing **{p1}** vs **{p2}**...")
     try:
         cutoff = datetime.now(timezone.utc) - timedelta(days=WEEKLY_MATCH_LOOKBACK_DAYS)
         start_epoch = int(cutoff.timestamp())
         a, b = await asyncio.gather(
-            aggregator._fetch_player_stats(player1, start_epoch),
-            aggregator._fetch_player_stats(player2, start_epoch),
+            aggregator._fetch_player_stats(p1, start_epoch),
+            aggregator._fetch_player_stats(p2, start_epoch),
         )
         await ctx.send(embed=build_versus_embed(a, b))
     except Exception as e:
@@ -166,13 +177,18 @@ async def versus(ctx, player1: str, player2: str):
 
 @bot.command(name="mastery")
 async def mastery(ctx, *, riot_id: str):
-    """Top 10 champion mastery. Usage: !mastery Name#TAG"""
-    await ctx.send(f"⏳ Fetching mastery for **{riot_id}**...")
+    """Top 10 champion mastery. Usage: !mastery Name  (or Name#TAG)"""
     try:
-        data = await aggregator.get_champion_mastery(riot_id, count=10)
+        resolved = resolve_riot_id(riot_id)
+    except ValueError as e:
+        await ctx.send(f"❌ {e}")
+        return
+    await ctx.send(f"⏳ Fetching mastery for **{resolved}**...")
+    try:
+        data = await aggregator.get_champion_mastery(resolved, count=10)
         await ctx.send(embed=build_mastery_embed(data))
     except Exception as e:
-        await ctx.send(f"❌ Could not fetch mastery for `{riot_id}`: {e}")
+        await ctx.send(f"❌ Could not fetch mastery for `{resolved}`: {e}")
 
 
 @bot.command(name="lolhelp")
@@ -183,9 +199,9 @@ async def lol_help(ctx):
     )
     embed.add_field(name="!daily", value="Force a daily recap (admin only)", inline=False)
     embed.add_field(name="!weekly", value="Force a weekly digest (admin only)", inline=False)
-    embed.add_field(name="!stats Name#TAG", value="Look up any player's current stats", inline=False)
-    embed.add_field(name="!versus Name1#TAG Name2#TAG", value="Head-to-head comparison of two players", inline=False)
-    embed.add_field(name="!mastery Name#TAG", value="Show top 10 champion mastery", inline=False)
+    embed.add_field(name="!stats Name", value="Look up a player's current stats (use nickname for tracked players, Name#TAG for others)", inline=False)
+    embed.add_field(name="!versus Name1 Name2", value="Head-to-head comparison of two players", inline=False)
+    embed.add_field(name="!mastery Name", value="Show top 10 champion mastery", inline=False)
     embed.add_field(name="!lolhelp", value="Show this message", inline=False)
     embed.set_footer(text=f"Tier promotions are auto-announced every {RANK_CHECK_INTERVAL_HOURS}h")
     await ctx.send(embed=embed)

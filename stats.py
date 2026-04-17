@@ -17,6 +17,20 @@ TIER_ORDER = ["IRON", "BRONZE", "SILVER", "GOLD", "PLATINUM", "EMERALD", "DIAMON
 RANK_ORDER = ["IV", "III", "II", "I"]
 
 
+def resolve_riot_id(name_or_id: str) -> str:
+    """If input contains '#', return as-is. Otherwise, match case-insensitively
+    against the name portion of tracked SUMMONERS. Raises ValueError if no match."""
+    if "#" in name_or_id:
+        return name_or_id
+    target = name_or_id.strip().lower()
+    for full in SUMMONERS:
+        name_part = full.split("#", 1)[0]
+        if name_part.lower() == target:
+            return full
+    known = ", ".join(s.split("#")[0] for s in SUMMONERS)
+    raise ValueError(f"Unknown player '{name_or_id}'. Known: {known} (or use full Name#TAG)")
+
+
 def rank_score(tier: str, rank: str, lp: int) -> int:
     t = TIER_ORDER.index(tier) if tier in TIER_ORDER else 0
     r = RANK_ORDER.index(rank) if rank in RANK_ORDER else 0
