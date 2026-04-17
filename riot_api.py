@@ -74,6 +74,11 @@ class RiotAPI:
         url = f"{BASE_PLATFORM}/lol/league/v4/entries/by-summoner/{summoner_id}"
         return await self._get(url)
 
+    async def get_ranked_stats_by_puuid(self, puuid: str) -> list:
+        """Returns ranked entries using PUUID (newer accounts may not have summoner ID)."""
+        url = f"{BASE_PLATFORM}/lol/league/v4/entries/by-puuid/{puuid}"
+        return await self._get(url)
+
     # -------------------------------------------------------------------------
     # Match endpoints
     # -------------------------------------------------------------------------

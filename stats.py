@@ -111,23 +111,22 @@ class StatsAggregator:
         account = await self.riot.get_account_by_riot_id(game_name, tag_line)
         puuid = account["puuid"]
         summoner = await self.riot.get_summoner_by_puuid(puuid)
-        summoner_id = summoner["id"]
         level = summoner.get("summonerLevel", 0)
         icon = summoner.get("profileIconId", 0)
 
-        self._account_cache[riot_id] = (puuid, summoner_id, level, icon)
+        self._account_cache[riot_id] = (puuid, level, icon)
         return self._account_cache[riot_id]
 
     async def _fetch_player_stats(self, riot_id: str, start_time_epoch: int) -> PlayerStats:
         ps = PlayerStats(riot_id)
         try:
-            puuid, summoner_id, level, icon = await self._resolve_player(riot_id)
+            puuid, level, icon = await self._resolve_player(riot_id)
             ps.puuid = puuid
             ps.summoner_level = level
             ps.profile_icon_id = icon
 
             # Ranked stats
-            ranked = await self.riot.get_ranked_stats(summoner_id)
+            ranked = await self.riot.get_ranked_stats_by_puuid(puuid)
             for entry in ranked:
                 if entry.get("queueType") == "RANKED_SOLO_5x5":
                     ps.solo_tier = entry.get("tier", "UNRANKED")
