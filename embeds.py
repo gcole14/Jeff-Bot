@@ -228,15 +228,6 @@ def build_promotion_embed(promo: dict) -> discord.Embed:
     return embed
 
 
-def _versus_row(embed: discord.Embed, label: str, a_val: str, b_val: str, a_wins: bool, b_wins: bool) -> None:
-    """Adds a comparison row (player A | label | player B) as three inline fields."""
-    a_prefix = "🏆 " if a_wins else ""
-    b_prefix = "🏆 " if b_wins else ""
-    embed.add_field(name="\u200b", value=f"{a_prefix}**{a_val}**", inline=True)
-    embed.add_field(name=label, value="⚔️", inline=True)
-    embed.add_field(name="\u200b", value=f"{b_prefix}**{b_val}**", inline=True)
-
-
 def _winner(v1, v2) -> tuple[bool, bool]:
     if v1 == v2:
         return False, False
@@ -262,44 +253,32 @@ def build_versus_embed(a: PlayerStats, b: PlayerStats) -> discord.Embed:
         embed.colour = LOL_RED
         return embed
 
-    # Header row with player names
-    embed.add_field(name=a.display_name, value=f"{_rank_emote(a.solo_tier)}", inline=True)
-    embed.add_field(name="\u200b", value="\u200b", inline=True)
-    embed.add_field(name=b.display_name, value=f"{_rank_emote(b.solo_tier)}", inline=True)
-
-    # Rank
-    a_win, b_win = _winner(a.overall_rank_score, b.overall_rank_score)
-    _versus_row(embed, "Rank", a.formatted_rank(), b.formatted_rank(), a_win, b_win)
-
-    # Games played
-    a_win, b_win = _winner(a.games_played, b.games_played)
-    _versus_row(embed, "Games", str(a.games_played), str(b.games_played), a_win, b_win)
-
-    # Win rate
-    a_win, b_win = _winner(a.win_rate, b.win_rate)
-    _versus_row(embed, "Win Rate", f"{a.win_rate:.0f}%", f"{b.win_rate:.0f}%", a_win, b_win)
-
-    # W/L
-    a_win, b_win = _winner(a.wins, b.wins)
-    _versus_row(embed, "W / L", f"{a.wins}W {a.losses}L", f"{b.wins}W {b.losses}L", a_win, b_win)
-
-    # KDA
-    a_win, b_win = _winner(a.kda, b.kda)
-    _versus_row(embed, "KDA", f"{a.kda:.2f}", f"{b.kda:.2f}", a_win, b_win)
-
-    # Hours
-    a_win, b_win = _winner(a.hours_played, b.hours_played)
-    _versus_row(embed, "Hours", f"{a.hours_played:.1f}h", f"{b.hours_played:.1f}h", a_win, b_win)
-
-    # Damage to champions
-    a_win, b_win = _winner(a.total_damage_to_champions, b.total_damage_to_champions)
-    _versus_row(embed, "Damage", f"{a.total_damage_to_champions:,}", f"{b.total_damage_to_champions:,}", a_win, b_win)
-
-    # Top champion (informational, no trophy)
     a_top = a.top_champions[0][0] if a.top_champions else "N/A"
     b_top = b.top_champions[0][0] if b.top_champions else "N/A"
-    _versus_row(embed, "Top Champ", a_top, b_top, False, False)
 
+    categories = [
+        ("Rank",     a.formatted_rank(),               b.formatted_rank(),              a.overall_rank_score,       b.overall_rank_score),
+        ("Games",    str(a.games_played),              str(b.games_played),             a.games_played,             b.games_played),
+        ("Win Rate", f"{a.win_rate:.0f}%",             f"{b.win_rate:.0f}%",            a.win_rate,                 b.win_rate),
+        ("W / L",    f"{a.wins}W {a.losses}L",         f"{b.wins}W {b.losses}L",        a.wins,                     b.wins),
+        ("KDA",      f"{a.kda:.2f}",                   f"{b.kda:.2f}",                  a.kda,                      b.kda),
+        ("Hours",    f"{a.hours_played:.1f}h",         f"{b.hours_played:.1f}h",        a.hours_played,             b.hours_played),
+        ("Damage",   f"{a.total_damage_to_champions:,}", f"{b.total_damage_to_champions:,}", a.total_damage_to_champions, b.total_damage_to_champions),
+    ]
+
+    lines = [
+        f"**{_rank_emote(a.solo_tier)} {a.display_name}**  ⚔️  **{b.display_name} {_rank_emote(b.solo_tier)}**",
+        "",
+    ]
+    for label, a_val, b_val, a_cmp, b_cmp in categories:
+        a_win, b_win = _winner(a_cmp, b_cmp)
+        a_prefix = "🏆 " if a_win else ""
+        b_prefix = " 🏆" if b_win else ""
+        lines.append(f"**{label}** — {a_prefix}{a_val}  •  {b_val}{b_prefix}")
+
+    lines.append(f"**Top Champ** — {a_top}  •  {b_top}")
+
+    embed.description = "\n".join(lines)
     return embed
 
 
