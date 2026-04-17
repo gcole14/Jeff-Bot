@@ -291,11 +291,57 @@ def build_versus_embed(a: PlayerStats, b: PlayerStats) -> discord.Embed:
     a_win, b_win = _winner(a.hours_played, b.hours_played)
     _versus_row(embed, "Hours", f"{a.hours_played:.1f}h", f"{b.hours_played:.1f}h", a_win, b_win)
 
+    # Damage to champions
+    a_win, b_win = _winner(a.total_damage_to_champions, b.total_damage_to_champions)
+    _versus_row(embed, "Damage", f"{a.total_damage_to_champions:,}", f"{b.total_damage_to_champions:,}", a_win, b_win)
+
     # Top champion (informational, no trophy)
     a_top = a.top_champions[0][0] if a.top_champions else "N/A"
     b_top = b.top_champions[0][0] if b.top_champions else "N/A"
     _versus_row(embed, "Top Champ", a_top, b_top, False, False)
 
+    return embed
+
+
+def build_damage_embed(stats: list[PlayerStats]) -> discord.Embed:
+    """Weekly damage-to-champions leaderboard."""
+    now = datetime.now(timezone.utc)
+    active = [ps for ps in stats if ps.games_played > 0 and not ps.error]
+    ranked = sorted(active, key=lambda p: p.total_damage_to_champions, reverse=True)
+
+    embed = discord.Embed(
+        title="💥 Weekly Damage Leaderboard",
+        color=LOL_RED,
+        timestamp=now,
+    )
+    embed.set_footer(text="Total damage to champions • last 7 days")
+
+    if not ranked:
+        embed.description = "*No games played this week.*"
+        return embed
+
+    medals = ["🥇", "🥈", "🥉"]
+    lines = []
+    total = 0
+    for i, ps in enumerate(ranked):
+        medal = medals[i] if i < 3 else f"**{i+1}.**"
+        per_game = ps.total_damage_to_champions / ps.games_played if ps.games_played else 0
+        total += ps.total_damage_to_champions
+        lines.append(
+            f"{medal} **{ps.display_name}** — {ps.total_damage_to_champions:,} dmg "
+            f"({ps.games_played} games • {per_game:,.0f} / game)"
+        )
+
+    # Include unranked/errored at the bottom as informational
+    inactive = [ps for ps in stats if ps not in active]
+    for ps in inactive:
+        if ps.error:
+            lines.append(f"⚠️ **{ps.display_name}** — error: `{ps.error}`")
+        else:
+            lines.append(f"— **{ps.display_name}** — no games this week")
+
+    embed.description = "\n".join(lines)
+    embed.add_field(name="Group Total", value=f"**{total:,}** damage", inline=False)
     return embed
 
 

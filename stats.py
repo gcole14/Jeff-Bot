@@ -67,6 +67,7 @@ class PlayerStats:
         self.total_kills: int = 0
         self.total_deaths: int = 0
         self.total_assists: int = 0
+        self.total_damage_to_champions: int = 0
         self.total_game_duration_seconds: int = 0
         self.champion_counts: dict = defaultdict(int)
         self.lp_change: int = 0  # Estimated LP change over period
@@ -192,6 +193,7 @@ class StatsAggregator:
                 ps.total_kills += player_data.get("kills", 0)
                 ps.total_deaths += player_data.get("deaths", 0)
                 ps.total_assists += player_data.get("assists", 0)
+                ps.total_damage_to_champions += player_data.get("totalDamageDealtToChampions", 0)
                 ps.total_game_duration_seconds += info.get("gameDuration", 0)
                 ps.champion_counts[player_data.get("championName", "Unknown")] += 1
 

@@ -17,6 +17,7 @@ from stats import StatsAggregator, RankTracker, resolve_riot_id
 from embeds import (
     build_daily_embed, build_weekly_embed, build_player_snapshot_embed,
     build_promotion_embed, build_versus_embed, build_mastery_embed,
+    build_damage_embed,
 )
 
 logging.basicConfig(
@@ -175,6 +176,17 @@ async def versus(ctx, player1: str, player2: str):
         await ctx.send(f"❌ Versus lookup failed: {e}")
 
 
+@bot.command(name="damage")
+async def damage(ctx):
+    """Weekly damage-to-champions leaderboard. Usage: !damage"""
+    await ctx.send("⏳ Crunching damage numbers for the past week...")
+    try:
+        stats = await aggregator.get_weekly_stats()
+        await ctx.send(embed=build_damage_embed(stats))
+    except Exception as e:
+        await ctx.send(f"❌ Could not fetch damage stats: {e}")
+
+
 @bot.command(name="mastery")
 async def mastery(ctx, *, riot_id: str):
     """Top 10 champion mastery. Usage: !mastery Name  (or Name#TAG)"""
@@ -201,6 +213,7 @@ async def lol_help(ctx):
     embed.add_field(name="!weekly", value="Force a weekly digest (admin only)", inline=False)
     embed.add_field(name="!stats Name", value="Look up a player's current stats (use nickname for tracked players, Name#TAG for others)", inline=False)
     embed.add_field(name="!versus Name1 Name2", value="Head-to-head comparison of two players", inline=False)
+    embed.add_field(name="!damage", value="Weekly damage-to-champions leaderboard", inline=False)
     embed.add_field(name="!mastery Name", value="Show top 10 champion mastery", inline=False)
     embed.add_field(name="!lolhelp", value="Show this message", inline=False)
     embed.set_footer(text=f"Tier promotions are auto-announced every {RANK_CHECK_INTERVAL_HOURS}h")
