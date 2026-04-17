@@ -1,0 +1,391 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<title>Versus Card</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter+Tight:wght@200;300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
+<style>
+  html, body { margin: 0; padding: 0; background: transparent; }
+  * { box-sizing: border-box; }
+</style>
+<script src="https://unpkg.com/react@18.3.1/umd/react.development.js" integrity="sha384-hD6/rw4ppMLGNu3tX5cjIb+uRZ7UkRJ6BPkLpg4hAu/6onKUg4lLsHAs9EBPT82L" crossorigin="anonymous"></script>
+<script src="https://unpkg.com/react-dom@18.3.1/umd/react-dom.development.js" integrity="sha384-u6aeetuaXnQ38mYT8rp6sbXaQe3NL9t+IBXmnYxwkUI2Hw4bsp2Wvmx4yRQF1uAm" crossorigin="anonymous"></script>
+<script src="https://unpkg.com/@babel/standalone@7.29.0/babel.min.js" integrity="sha384-m08KidiNqLdpJqLq95G/LEi8Qvjl/xUYll3QILypMoQ65QorJ9Lvtp2RXYGBFj1y" crossorigin="anonymous"></script>
+<!-- DATA_INJECTION -->
+<script>
+window.RANK_TIERS = {
+  iron:        { name: "IRON",        color: "#6b6357", glow: "#9a8d7a", grad: ["#3a3530","#6b6357"] },
+  bronze:      { name: "BRONZE",      color: "#a77044", glow: "#c8925f", grad: ["#4d2f1a","#a77044"] },
+  silver:      { name: "SILVER",      color: "#9aa5b1", glow: "#c6cfd9", grad: ["#4a5159","#9aa5b1"] },
+  gold:        { name: "GOLD",        color: "#d4a43c", glow: "#f0c868", grad: ["#6b5015","#d4a43c"] },
+  platinum:    { name: "PLATINUM",    color: "#3fb9a8", glow: "#6ddacb", grad: ["#134a42","#3fb9a8"] },
+  emerald:     { name: "EMERALD",     color: "#2fa35a", glow: "#5fc685", grad: ["#0e3d22","#2fa35a"] },
+  diamond:     { name: "DIAMOND",     color: "#5d8bd6", glow: "#8bb0ec", grad: ["#1e3968","#5d8bd6"] },
+  master:      { name: "MASTER",      color: "#b058d9", glow: "#d184f0", grad: ["#3f1a56","#b058d9"] },
+  grandmaster: { name: "GRANDMASTER", color: "#d93f3f", glow: "#f06868", grad: ["#501414","#d93f3f"] },
+  challenger:  { name: "CHALLENGER",  color: "#ecc86b", glow: "#f5dfa0", grad: ["#0a6a8a","#ecc86b"] },
+};
+</script>
+</head>
+<body>
+<div id="card-root" style="width:1200px;height:630px;overflow:hidden;display:inline-block"></div>
+
+<script type="text/babel" data-presets="react">
+
+function SummonerAvatar({ url, size, ring }) {
+  return (
+    <div style={{
+      width: size, height: size, borderRadius: "50%", overflow: "hidden",
+      flexShrink: 0, background: "#1a1d26",
+      boxShadow: ring ? `0 0 0 3px ${ring}` : "none",
+    }}>
+      {url
+        ? <img src={url} style={{width:"100%",height:"100%",objectFit:"cover"}} onError={(e) => { e.target.style.display="none"; }} />
+        : <div style={{
+            width:"100%",height:"100%",
+            background:"repeating-linear-gradient(135deg,#1a1d26 0 8px,rgba(255,255,255,0.1) 8px 9px)",
+            display:"flex",alignItems:"center",justifyContent:"center",
+            fontSize:Math.max(8,size/5),color:"rgba(255,255,255,0.5)",fontFamily:"monospace",
+          }}>SUM</div>
+      }
+    </div>
+  );
+}
+
+function ChampAvatar({ url, name, size }) {
+  return (
+    <div style={{
+      width:size,height:size,borderRadius:4,overflow:"hidden",flexShrink:0,background:"#1e2230",
+    }}>
+      {url
+        ? <img src={url} style={{width:"100%",height:"100%",objectFit:"cover"}} onError={(e)=>{e.target.style.display="none";}} />
+        : <div style={{
+            width:"100%",height:"100%",
+            background:"repeating-linear-gradient(135deg,#1e2230 0 8px,rgba(255,255,255,0.08) 8px 9px)",
+            display:"flex",alignItems:"center",justifyContent:"center",
+            fontSize:Math.max(7,size/4),color:"rgba(255,255,255,0.4)",fontFamily:"monospace",
+          }}>{(name||"?").slice(0,3).toUpperCase()}</div>
+      }
+    </div>
+  );
+}
+
+function RankBadge({ tier, division, size = "sm" }) {
+  const T = window.RANK_TIERS[tier] || window.RANK_TIERS.iron;
+  const px = size === "lg" ? { p: "6px 12px", fs: 12 } : { p: "3px 8px", fs: 10 };
+  return (
+    <div style={{
+      display: "inline-flex", alignItems: "center", gap: 6,
+      padding: px.p, border: `1.5px solid ${T.color}`,
+      color: T.color, fontSize: px.fs,
+      fontFamily: "'JetBrains Mono', monospace",
+      letterSpacing: 2, fontWeight: 700, borderRadius: 3,
+      background: T.color + "14", textTransform: "uppercase",
+    }}>
+      <span style={{ width: 6, height: 6, borderRadius: "50%",
+                     background: T.color, boxShadow: `0 0 6px ${T.color}` }} />
+      {T.name}{division ? ` ${division}` : ""}
+    </div>
+  );
+}
+
+function CompareRow({ label, unit, leftVal, rightVal, leftDisplay, rightDisplay, higherBetter = true, subLeft, subRight }) {
+  const lN = typeof leftVal === "number" ? leftVal : 0;
+  const rN = typeof rightVal === "number" ? rightVal : 0;
+  const total = (lN + rN) || 1;
+  const leftPct = (lN / total) * 100;
+  const rightPct = 100 - leftPct;
+  const leftAhead = higherBetter ? lN > rN : lN < rN;
+  const rightAhead = higherBetter ? rN > lN : rN < lN;
+  const tie = lN === rN;
+
+  const WIN = "#29b661";
+  const WIN_GLOW = "#38d474";
+  const DIM = "rgba(255,255,255,0.38)";
+
+  return (
+    <div style={vs.row}>
+      <div style={vs.rowVals}>
+        <div style={{...vs.rowVal, textAlign: "right",
+                     color: tie ? "#fff" : leftAhead ? WIN_GLOW : DIM,
+                     fontWeight: leftAhead ? 700 : 400}}>
+          {leftDisplay != null ? leftDisplay : leftVal}{unit && <span style={vs.unit}>{unit}</span>}
+        </div>
+        <div style={vs.rowLbl}>{label}</div>
+        <div style={{...vs.rowVal, textAlign: "left",
+                     color: tie ? "#fff" : rightAhead ? WIN_GLOW : DIM,
+                     fontWeight: rightAhead ? 700 : 400}}>
+          {rightDisplay != null ? rightDisplay : rightVal}{unit && <span style={vs.unit}>{unit}</span>}
+        </div>
+      </div>
+      <div style={vs.bar}>
+        <div style={{
+          ...vs.barSegL,
+          width: `${leftPct}%`,
+          background: leftAhead ? WIN : "rgba(255,255,255,0.18)",
+          boxShadow: leftAhead ? `0 0 12px ${WIN}66` : "none",
+        }} />
+        <div style={vs.barMid} />
+        <div style={{
+          ...vs.barSegR,
+          width: `${rightPct}%`,
+          background: rightAhead ? WIN : "rgba(255,255,255,0.18)",
+          boxShadow: rightAhead ? `0 0 12px ${WIN}66` : "none",
+        }} />
+      </div>
+      {(subLeft || subRight) && (
+        <div style={vs.rowSubs}>
+          <div style={{...vs.rowSub, textAlign: "right"}}>{subLeft}</div>
+          <div />
+          <div style={{...vs.rowSub, textAlign: "left"}}>{subRight}</div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function CrownIcon() {
+  return (
+    <svg width="28" height="24" viewBox="0 0 28 24" fill="none">
+      <path d="M3 8l5 4 6-9 6 9 5-4-2 13H5L3 8z"
+            fill="#f5dfa0" stroke="#8a6a1a" strokeWidth="1"
+            strokeLinejoin="round"/>
+      <circle cx="3" cy="8" r="1.5" fill="#f5dfa0" stroke="#8a6a1a"/>
+      <circle cx="25" cy="8" r="1.5" fill="#f5dfa0" stroke="#8a6a1a"/>
+      <circle cx="14" cy="3" r="1.5" fill="#f5dfa0" stroke="#8a6a1a"/>
+    </svg>
+  );
+}
+
+function PlayerColumn({ p, align, crown }) {
+  const T = window.RANK_TIERS[p.tier] || window.RANK_TIERS.iron;
+  const flex = align === "right" ? "flex-end" : "flex-start";
+  const txt = align === "right" ? "right" : "left";
+  return (
+    <div style={{
+      ...vs.col,
+      alignItems: flex, textAlign: txt,
+      background: `linear-gradient(${align === "right" ? "90deg" : "-90deg"}, ${T.color}14, transparent 70%)`,
+    }}>
+      <div style={vs.colIcon}>
+        <SummonerAvatar url={p.iconUrl} size={96} ring={T.color} />
+        {crown && (
+          <div style={{...vs.crown, [align === "right" ? "right" : "left"]: -10}}>
+            <CrownIcon />
+          </div>
+        )}
+      </div>
+      <div style={vs.colName}>{p.name}</div>
+      <div style={vs.colTag}>#{p.tag} · LVL {p.level}</div>
+      <div style={vs.colRank}>
+        <RankBadge tier={p.tier} division={p.division} size="lg" />
+      </div>
+      <div style={vs.colFoot}>
+        <div style={vs.colFootLbl}>MOST PLAYED</div>
+        <div style={vs.colFootRow(align)}>
+          <ChampAvatar url={p.topChamp && p.topChamp.iconUrl} name={p.topChamp && p.topChamp.name} size={28} />
+          <div>
+            <div style={vs.colFootName}>{p.topChamp ? p.topChamp.name : "—"}</div>
+            <div style={vs.colFootMeta}>{p.topChamp ? `${p.topChamp.games} games` : ""} · {p.games} total</div>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function CardVersus({ data }) {
+  const { left, right, week } = data.versus;
+
+  const stats = [
+    [left.winRate, right.winRate, true],
+    [left.kda, right.kda, true],
+    [left.kp, right.kp, true],
+    [left.cs, right.cs, true],
+    [left.vision, right.vision, true],
+    [left.lpChange, right.lpChange, true],
+    [left.dmgTotalRaw || 0, right.dmgTotalRaw || 0, true],
+  ];
+  const leftWins = stats.filter(([l, r, hb]) => hb ? l > r : l < r).length;
+  const rightWins = stats.filter(([l, r, hb]) => hb ? r > l : r < l).length;
+  const winner = leftWins > rightWins ? "left" : rightWins > leftWins ? "right" : "tie";
+
+  return (
+    <div style={vs.root}>
+      <div style={vs.grid} aria-hidden />
+
+      <div style={vs.hd}>
+        <div style={vs.hdL}>
+          <span style={vs.liveDot} />
+          <span style={vs.hdTitle}>WEEKLY DUEL</span>
+          <span style={vs.hdSep} />
+          <span style={vs.hdMeta}>{week.label} · {week.dateRange}</span>
+        </div>
+        <div style={vs.hdR}>SIDE-BY-SIDE COMPARISON</div>
+      </div>
+
+      <div style={vs.body}>
+        <PlayerColumn p={left} align="right" crown={winner === "left"} />
+
+        <div style={vs.middle}>
+          <div style={vs.vsCircle}>
+            <span style={vs.vsText}>VS</span>
+          </div>
+          <div style={vs.scorecard}>
+            <div style={{...vs.scoreNum, color: leftWins >= rightWins ? "#38d474" : "rgba(255,255,255,0.5)"}}>
+              {leftWins}
+            </div>
+            <div style={vs.scoreLbl}>STATS WON</div>
+            <div style={{...vs.scoreNum, color: rightWins > leftWins ? "#38d474" : "rgba(255,255,255,0.5)"}}>
+              {rightWins}
+            </div>
+          </div>
+
+          <div style={vs.rows}>
+            <CompareRow
+              label="WIN RATE" unit="%"
+              leftVal={left.winRate} rightVal={right.winRate}
+              subLeft={`${left.wins}W · ${left.losses}L`}
+              subRight={`${right.wins}W · ${right.losses}L`}
+            />
+            <CompareRow
+              label="KDA"
+              leftVal={left.kda} rightVal={right.kda}
+              leftDisplay={Number(left.kda).toFixed(2)} rightDisplay={Number(right.kda).toFixed(2)}
+              subLeft={left.kdaLine} subRight={right.kdaLine}
+            />
+            <CompareRow
+              label="KILL PART." unit="%"
+              leftVal={left.kp} rightVal={right.kp}
+            />
+            <CompareRow
+              label="CS / MIN"
+              leftVal={left.cs} rightVal={right.cs}
+            />
+            <CompareRow
+              label="VISION"
+              leftVal={left.vision} rightVal={right.vision}
+            />
+            <CompareRow
+              label="LP THIS WEEK" unit="LP"
+              leftVal={left.lpChange} rightVal={right.lpChange}
+              leftDisplay={(left.lpChange >= 0 ? "+" : "") + left.lpChange}
+              rightDisplay={(right.lpChange >= 0 ? "+" : "") + right.lpChange}
+            />
+            <CompareRow
+              label="TOTAL DMG"
+              leftVal={left.dmgTotalRaw || 0} rightVal={right.dmgTotalRaw || 0}
+              leftDisplay={left.dmgTotal} rightDisplay={right.dmgTotal}
+            />
+          </div>
+        </div>
+
+        <PlayerColumn p={right} align="left" crown={winner === "right"} />
+      </div>
+    </div>
+  );
+}
+
+const vs = {
+  root: {
+    width: 1200, height: 630, position: "relative", overflow: "hidden",
+    background: "linear-gradient(180deg, #14161e 0%, #0a0b10 100%)",
+    color: "#fff", fontFamily: "'Inter Tight', -apple-system, sans-serif",
+    display: "flex", flexDirection: "column",
+  },
+  grid: { position: "absolute", inset: 0,
+          backgroundImage: "linear-gradient(rgba(255,255,255,0.025) 1px, transparent 1px), linear-gradient(90deg, rgba(255,255,255,0.025) 1px, transparent 1px)",
+          backgroundSize: "40px 40px", pointerEvents: "none" },
+  hd: { padding: "18px 32px", display: "flex",
+        justifyContent: "space-between", alignItems: "center",
+        borderBottom: "1px solid rgba(255,255,255,0.08)", position: "relative", zIndex: 1 },
+  hdL: { display: "flex", alignItems: "center", gap: 12,
+         fontFamily: "'JetBrains Mono', monospace" },
+  liveDot: { width: 8, height: 8, borderRadius: "50%", background: "#d93f3f",
+             boxShadow: "0 0 10px #d93f3f" },
+  hdTitle: { fontSize: 12, letterSpacing: 2.5, fontWeight: 700 },
+  hdSep: { width: 1, height: 14, background: "rgba(255,255,255,0.2)" },
+  hdMeta: { fontSize: 11, color: "rgba(255,255,255,0.55)", letterSpacing: 1.2 },
+  hdR: { fontSize: 10, letterSpacing: 2.5, color: "rgba(255,255,255,0.4)",
+         fontFamily: "'JetBrains Mono', monospace", fontWeight: 600 },
+  body: { display: "grid", gridTemplateColumns: "1fr 1.3fr 1fr",
+          flex: 1, position: "relative", zIndex: 1 },
+  col: { padding: "26px 28px", display: "flex", flexDirection: "column",
+         gap: 10, position: "relative" },
+  colIcon: { position: "relative" },
+  crown: { position: "absolute", top: -8, filter: "drop-shadow(0 2px 6px rgba(245,223,160,0.5))" },
+  colName: { fontSize: 28, fontWeight: 600, letterSpacing: -0.8, marginTop: 6, lineHeight: 1 },
+  colTag: { fontSize: 11, color: "rgba(255,255,255,0.5)",
+            fontFamily: "'JetBrains Mono', monospace", letterSpacing: 1.2, marginTop: 4 },
+  colRank: { marginTop: 6 },
+  colFoot: { marginTop: "auto", width: "100%" },
+  colFootLbl: { fontSize: 9, letterSpacing: 2, color: "rgba(255,255,255,0.45)",
+                fontFamily: "'JetBrains Mono', monospace", fontWeight: 600, marginBottom: 8 },
+  colFootRow: (align) => ({
+    display: "flex", alignItems: "center", gap: 10,
+    flexDirection: align === "right" ? "row-reverse" : "row",
+    padding: "8px 10px",
+    background: "rgba(255,255,255,0.04)",
+    border: "1px solid rgba(255,255,255,0.08)",
+    borderRadius: 6,
+  }),
+  colFootName: { fontSize: 13, fontWeight: 600, lineHeight: 1 },
+  colFootMeta: { fontSize: 10, color: "rgba(255,255,255,0.5)",
+                 fontFamily: "'JetBrains Mono', monospace", letterSpacing: 0.6, marginTop: 2 },
+  middle: { padding: "18px 10px 18px", display: "flex", flexDirection: "column",
+            alignItems: "stretch", gap: 8,
+            borderLeft: "1px solid rgba(255,255,255,0.08)",
+            borderRight: "1px solid rgba(255,255,255,0.08)",
+            position: "relative" },
+  vsCircle: { alignSelf: "center", width: 56, height: 56, borderRadius: "50%",
+              background: "linear-gradient(145deg, #1e2230, #0a0b10)",
+              border: "1.5px solid rgba(255,255,255,0.14)",
+              display: "flex", alignItems: "center", justifyContent: "center",
+              boxShadow: "inset 0 0 12px rgba(255,255,255,0.05), 0 4px 14px rgba(0,0,0,0.4)",
+              marginTop: -4 },
+  vsText: { fontSize: 16, fontWeight: 800, letterSpacing: 1,
+            fontFamily: "'JetBrains Mono', monospace", color: "rgba(255,255,255,0.9)" },
+  scorecard: { display: "grid", gridTemplateColumns: "1fr auto 1fr",
+               alignItems: "center", padding: "0 20px", gap: 16 },
+  scoreNum: { fontSize: 30, fontWeight: 700, textAlign: "center",
+              fontFeatureSettings: '"tnum"', letterSpacing: -1, lineHeight: 1 },
+  scoreLbl: { fontSize: 9, letterSpacing: 2, color: "rgba(255,255,255,0.5)",
+              fontFamily: "'JetBrains Mono', monospace", fontWeight: 600, textAlign: "center" },
+  rows: { display: "flex", flexDirection: "column", gap: 4, padding: "6px 12px 0" },
+  row: { padding: "4px 0" },
+  rowVals: { display: "grid", gridTemplateColumns: "1fr auto 1fr",
+             alignItems: "baseline", gap: 10 },
+  rowVal: { fontSize: 20, fontWeight: 500, letterSpacing: -0.5,
+            fontFeatureSettings: '"tnum"', lineHeight: 1, fontVariantNumeric: "tabular-nums" },
+  unit: { fontSize: 11, color: "rgba(255,255,255,0.5)", marginLeft: 2, fontWeight: 400 },
+  rowLbl: { fontSize: 9, letterSpacing: 2, color: "rgba(255,255,255,0.55)",
+            fontFamily: "'JetBrains Mono', monospace", fontWeight: 700,
+            padding: "0 8px", whiteSpace: "nowrap" },
+  bar: { display: "flex", alignItems: "center", height: 4, marginTop: 4 },
+  barSegL: { height: "100%", borderRadius: "2px 0 0 2px" },
+  barMid: { width: 2, height: 8, background: "rgba(255,255,255,0.2)", borderRadius: 1 },
+  barSegR: { height: "100%", borderRadius: "0 2px 2px 0" },
+  rowSubs: { display: "grid", gridTemplateColumns: "1fr auto 1fr", gap: 10, marginTop: 2 },
+  rowSub: { fontSize: 9, color: "rgba(255,255,255,0.4)",
+            fontFamily: "'JetBrains Mono', monospace", letterSpacing: 0.6 },
+};
+
+function App() {
+  const data = window.CARD_DATA;
+
+  React.useEffect(() => {
+    document.fonts.ready.then(() => {
+      const root = document.getElementById("card-root");
+      if (root) root.dataset.ready = "1";
+    });
+  }, []);
+
+  return <CardVersus data={data} />;
+}
+
+ReactDOM.createRoot(document.getElementById("card-root")).render(<App />);
+</script>
+</body>
+</html>

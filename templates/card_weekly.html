@@ -1,0 +1,423 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<title>Weekly Stats Card</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter+Tight:wght@200;300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
+<style>
+  html, body { margin: 0; padding: 0; background: transparent; }
+  * { box-sizing: border-box; }
+</style>
+<script src="https://unpkg.com/react@18.3.1/umd/react.development.js" integrity="sha384-hD6/rw4ppMLGNu3tX5cjIb+uRZ7UkRJ6BPkLpg4hAu/6onKUg4lLsHAs9EBPT82L" crossorigin="anonymous"></script>
+<script src="https://unpkg.com/react-dom@18.3.1/umd/react-dom.development.js" integrity="sha384-u6aeetuaXnQ38mYT8rp6sbXaQe3NL9t+IBXmnYxwkUI2Hw4bsp2Wvmx4yRQF1uAm" crossorigin="anonymous"></script>
+<script src="https://unpkg.com/@babel/standalone@7.29.0/babel.min.js" integrity="sha384-m08KidiNqLdpJqLq95G/LEi8Qvjl/xUYll3QILypMoQ65QorJ9Lvtp2RXYGBFj1y" crossorigin="anonymous"></script>
+<!-- DATA_INJECTION -->
+<script>
+window.RANK_TIERS = {
+  iron:        { name: "IRON",        color: "#6b6357", glow: "#9a8d7a", grad: ["#3a3530","#6b6357"] },
+  bronze:      { name: "BRONZE",      color: "#a77044", glow: "#c8925f", grad: ["#4d2f1a","#a77044"] },
+  silver:      { name: "SILVER",      color: "#9aa5b1", glow: "#c6cfd9", grad: ["#4a5159","#9aa5b1"] },
+  gold:        { name: "GOLD",        color: "#d4a43c", glow: "#f0c868", grad: ["#6b5015","#d4a43c"] },
+  platinum:    { name: "PLATINUM",    color: "#3fb9a8", glow: "#6ddacb", grad: ["#134a42","#3fb9a8"] },
+  emerald:     { name: "EMERALD",     color: "#2fa35a", glow: "#5fc685", grad: ["#0e3d22","#2fa35a"] },
+  diamond:     { name: "DIAMOND",     color: "#5d8bd6", glow: "#8bb0ec", grad: ["#1e3968","#5d8bd6"] },
+  master:      { name: "MASTER",      color: "#b058d9", glow: "#d184f0", grad: ["#3f1a56","#b058d9"] },
+  grandmaster: { name: "GRANDMASTER", color: "#d93f3f", glow: "#f06868", grad: ["#501414","#d93f3f"] },
+  challenger:  { name: "CHALLENGER",  color: "#ecc86b", glow: "#f5dfa0", grad: ["#0a6a8a","#ecc86b"] },
+};
+window.DIVISION_BY_TIER = {
+  iron: "III", bronze: "II", silver: "I", gold: "IV", platinum: "II",
+  emerald: "III", diamond: "I", master: "", grandmaster: "", challenger: "",
+};
+</script>
+</head>
+<body>
+<div id="card-root" style="width:1200px;height:630px;overflow:hidden;display:inline-block"></div>
+
+<script type="text/babel" data-presets="react">
+
+function RoleIcon({ role, size = 20, color = "currentColor" }) {
+  const s = size;
+  const common = { width: s, height: s, viewBox: "0 0 24 24", fill: "none",
+                   stroke: color, strokeWidth: 1.8, strokeLinecap: "round",
+                   strokeLinejoin: "round", style: { flexShrink: 0 } };
+  switch (role) {
+    case "TOP":
+      return (<svg {...common}><rect x="3" y="3" width="18" height="18" rx="2"/>
+        <path d="M12 16V8M8 12l4-4 4 4"/></svg>);
+    case "JGL":
+      return (<svg {...common}><path d="M4 20C12 20 20 12 20 4"/>
+        <path d="M20 4c-5 0-10 1-14 6"/><path d="M20 4c0 5-1 10-6 14"/></svg>);
+    case "MID":
+      return (<svg {...common}><path d="M12 3l9 9-9 9-9-9 9-9z"/><path d="M7 12h10"/></svg>);
+    case "ADC":
+      return (<svg {...common}><circle cx="12" cy="12" r="8"/>
+        <path d="M12 2v4M12 18v4M2 12h4M18 12h4"/><circle cx="12" cy="12" r="2"/></svg>);
+    case "SUP":
+      return (<svg {...common}><path d="M12 3l8 3v6c0 5-4 8-8 9-4-1-8-4-8-9V6l8-3z"/>
+        <path d="M9 12l2 2 4-4"/></svg>);
+    default:
+      return <svg {...common}><circle cx="12" cy="12" r="8"/></svg>;
+  }
+}
+
+const ROLE_LABEL = { TOP: "Top", JGL: "Jungle", MID: "Mid", ADC: "Bot", SUP: "Support" };
+
+function RankCrest({ tier, size }) {
+  const T = window.RANK_TIERS[tier];
+  return (
+    <div style={{
+      width: size, height: size, borderRadius: 12, flexShrink: 0,
+      background: `linear-gradient(145deg, ${T.grad[0]} 0%, ${T.grad[1]} 100%)`,
+      border: `2px solid ${T.color}55`,
+      display: "flex", flexDirection: "column",
+      alignItems: "center", justifyContent: "center", gap: 6,
+      boxShadow: `0 0 28px ${T.color}30, inset 0 0 30px rgba(0,0,0,0.25)`,
+    }}>
+      <svg width={size * 0.5} height={size * 0.5} viewBox="0 0 60 60" fill="none">
+        <polygon points="30,4 56,19 56,41 30,56 4,41 4,19"
+          stroke={T.color} strokeWidth="2" fill={T.color + "22"} />
+        <polygon points="30,13 47,23 47,37 30,47 13,37 13,23"
+          stroke={T.glow} strokeWidth="1.5" fill="none" opacity="0.7" />
+        <circle cx="30" cy="30" r="8" fill={T.color + "40"} stroke={T.glow} strokeWidth="1.5" />
+      </svg>
+      <div style={{
+        fontSize: 11, fontWeight: 700, letterSpacing: 2,
+        color: T.glow, fontFamily: "'JetBrains Mono', monospace",
+      }}>{T.name}</div>
+    </div>
+  );
+}
+
+function SummonerAvatar({ url, size, ring }) {
+  return (
+    <div style={{
+      width: size, height: size, borderRadius: "50%", overflow: "hidden",
+      flexShrink: 0, background: "#1a1d26",
+      boxShadow: ring ? `0 0 0 3px ${ring}` : "none",
+    }}>
+      {url
+        ? <img src={url} style={{width: "100%", height: "100%", objectFit: "cover"}} onError={(e) => { e.target.style.display = "none"; }} />
+        : <div style={{
+            width: "100%", height: "100%",
+            background: "repeating-linear-gradient(135deg,#1a1d26 0 8px,rgba(255,255,255,0.1) 8px 9px)",
+            display: "flex", alignItems: "center", justifyContent: "center",
+            fontSize: Math.max(8, size / 5), color: "rgba(255,255,255,0.5)",
+            fontFamily: "monospace", letterSpacing: 0.5,
+          }}>SUM</div>
+      }
+    </div>
+  );
+}
+
+function ChampAvatar({ url, name, size }) {
+  return (
+    <div style={{
+      width: size, height: size, borderRadius: 4, overflow: "hidden",
+      flexShrink: 0, background: "#e8e6e1",
+    }}>
+      {url
+        ? <img src={url} style={{width: "100%", height: "100%", objectFit: "cover"}} onError={(e) => { e.target.style.display = "none"; }} />
+        : <div style={{
+            width: "100%", height: "100%",
+            background: "repeating-linear-gradient(135deg,#e8e6e1 0 8px,rgba(0,0,0,0.08) 8px 9px)",
+            display: "flex", alignItems: "center", justifyContent: "center",
+            fontSize: Math.max(7, size / 4), color: "rgba(0,0,0,0.4)", fontFamily: "monospace",
+          }}>{(name || "?").slice(0, 3).toUpperCase()}</div>
+      }
+    </div>
+  );
+}
+
+function BigStat({ label, value, unit, sub, accent }) {
+  return (
+    <div style={crt.bstat}>
+      <div style={crt.bstatLbl}>{label}</div>
+      <div style={{...crt.bstatVal, color: accent || "#0e0e12"}}>
+        {value}{unit && <span style={crt.bstatUnit}>{unit}</span>}
+      </div>
+      <div style={crt.bstatSub}>{sub}</div>
+    </div>
+  );
+}
+
+function CardRankTinted({ data, tier }) {
+  const { summoner, week, champs } = data;
+  const T = window.RANK_TIERS[tier] || window.RANK_TIERS.iron;
+  const DIV = window.DIVISION_BY_TIER[tier];
+  const lpSign = week.lpChange >= 0 ? "+" : "";
+  const role = week.mostPlayedRole || "MID";
+  const roleGames = (week.roleSplit && week.roleSplit[role]) || 0;
+
+  return (
+    <div style={crt.root}>
+      {/* LEFT — rank-tinted hero */}
+      <div style={{
+        ...crt.hero,
+        background: `linear-gradient(155deg, ${T.grad[0]} 0%, ${T.grad[1]} 100%)`,
+      }}>
+        <div style={crt.bands} aria-hidden />
+        <div style={crt.heroTop}>
+          <div style={{...crt.heroTier, color: T.glow}}>{T.name}{DIV ? ` ${DIV}` : ""}</div>
+          <div style={crt.heroWeek}>{week.label}</div>
+        </div>
+
+        <div style={crt.heroCenter}>
+          <div style={crt.crestStack}>
+            <RankCrest tier={tier} size={150} />
+            <div style={crt.sumIconWrap}>
+              <SummonerAvatar url={summoner.iconUrl} size={64} ring={T.grad[1]} />
+              <div style={crt.levelBadge}>{summoner.level}</div>
+            </div>
+          </div>
+          <div style={crt.summoner}>
+            <div style={crt.summonerName}>{summoner.name}</div>
+            <div style={crt.summonerTag}>#{summoner.tag}</div>
+          </div>
+        </div>
+
+        <div style={crt.heroBottom}>
+          <div style={crt.lpBlock}>
+            <div style={crt.lpLbl}>LP THIS WEEK</div>
+            <div style={{...crt.lpNum, color: T.glow}}>
+              {lpSign}{week.lpChange}<span style={crt.lpUnit}>LP</span>
+            </div>
+            <div style={crt.lpCurrent}>
+              <span style={crt.lpCurrentDot} /> {week.currentLp} LP
+            </div>
+          </div>
+        </div>
+      </div>
+
+      {/* RIGHT — stats panel */}
+      <div style={crt.panel}>
+        <div style={crt.panelHd}>
+          <div style={crt.panelHdL}>WEEKLY PERFORMANCE</div>
+          <div style={crt.panelHdR}>{week.dateRange}</div>
+        </div>
+
+        <div style={crt.wrRow}>
+          <div>
+            <div style={crt.wrLbl}>WIN RATE</div>
+            <div style={crt.wrNum}>
+              {week.winRate}<span style={crt.wrPct}>%</span>
+            </div>
+          </div>
+          <div style={crt.wrChips}>
+            <div style={{...crt.wrChip, background: "#e8f7ec"}}>
+              <span style={{...crt.wrChipNum, color: "#1f8a3d"}}>{week.wins}</span>
+              <span style={{...crt.wrChipLbl, color: "#1f8a3d"}}>WINS</span>
+            </div>
+            <div style={{...crt.wrChip, background: "#f4f1ea"}}>
+              <span style={{...crt.wrChipNum, color: "#a33"}}>{week.losses}</span>
+              <span style={{...crt.wrChipLbl, color: "#a33"}}>LOSSES</span>
+            </div>
+            <div style={{...crt.wrChip, background: "#f4f1ea"}}>
+              <span style={crt.wrChipNum}>{week.gamesPlayed}</span>
+              <span style={{...crt.wrChipLbl, color: "#7a7468"}}>GAMES</span>
+            </div>
+          </div>
+        </div>
+        <div style={crt.wrBar}>
+          <div style={{...crt.wrBarFill, width: `${week.winRate}%`, background: T.color}} />
+        </div>
+
+        <div style={crt.statGrid}>
+          <BigStat
+            label="KDA"
+            value={typeof week.kda === "object" ? week.kda.ratio.toFixed(2) : Number(week.kda).toFixed(2)}
+            sub={typeof week.kda === "object" ? `${week.kda.k} / ${week.kda.d} / ${week.kda.a}` : ""}
+          />
+          <BigStat
+            label="KILL PARTICIPATION"
+            value={`${week.kp}`}
+            unit="%"
+            sub="of team kills"
+            accent={T.color}
+          />
+          <BigStat
+            label="CS PER MIN"
+            value={week.cs}
+            sub="creep score avg"
+          />
+          <BigStat
+            label="VISION SCORE"
+            value={week.vision}
+            sub="avg per game"
+          />
+        </div>
+
+        <div style={crt.bottomRow}>
+          <div style={{...crt.roleCard,
+                       borderColor: T.color + "55",
+                       background: `linear-gradient(135deg, ${T.color}10, transparent)`}}>
+            <div style={{...crt.roleIconWrap, color: T.color,
+                         borderColor: T.color, background: T.color + "14"}}>
+              <RoleIcon role={role} size={34} />
+            </div>
+            <div style={{minWidth: 0}}>
+              <div style={crt.roleLbl}>MAIN ROLE</div>
+              <div style={crt.roleName}>{ROLE_LABEL[role] || role}</div>
+              <div style={crt.roleMeta}>{roleGames} / {week.gamesPlayed} games</div>
+            </div>
+          </div>
+
+          <div style={crt.champsSec}>
+            <div style={crt.champsHd}>
+              <span>MOST PLAYED</span>
+              <span style={crt.champsHdLine} />
+            </div>
+            <div style={crt.champsList}>
+              {(champs || []).map((c, i) => (
+                <div key={c.name} style={crt.champRow}>
+                  <div style={crt.champRank}>0{i + 1}</div>
+                  <ChampAvatar url={c.iconUrl} name={c.name} size={34} />
+                  <div style={{minWidth: 0}}>
+                    <div style={crt.champName}>{c.name}</div>
+                    <div style={crt.champMeta}>{c.games}G · {Number(c.kda).toFixed(2)} KDA</div>
+                  </div>
+                  <div style={{...crt.champWr, color: c.wr >= 55 ? T.color : "#0e0e12"}}>
+                    {c.wr}<span style={crt.champWrPct}>%</span>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+const crt = {
+  root: {
+    width: 1200, height: 630, display: "grid", gridTemplateColumns: "440px 1fr",
+    fontFamily: "'Inter Tight', -apple-system, sans-serif",
+    background: "#fbfaf7", overflow: "hidden",
+  },
+  hero: {
+    position: "relative", padding: "32px 32px 28px",
+    display: "flex", flexDirection: "column", color: "#fff",
+    overflow: "hidden",
+  },
+  bands: {
+    position: "absolute", inset: 0,
+    backgroundImage: "repeating-linear-gradient(115deg, transparent 0 80px, rgba(255,255,255,0.04) 80px 82px)",
+    pointerEvents: "none",
+  },
+  heroTop: { display: "flex", justifyContent: "space-between", alignItems: "center", position: "relative" },
+  heroTier: { fontSize: 14, fontWeight: 700, letterSpacing: 3, textTransform: "uppercase" },
+  heroWeek: { fontSize: 11, letterSpacing: 2, opacity: 0.7, fontFamily: "'JetBrains Mono', monospace" },
+  heroCenter: { flex: 1, display: "flex", flexDirection: "column", alignItems: "center",
+                justifyContent: "center", gap: 14, position: "relative" },
+  crestStack: { position: "relative", display: "flex", alignItems: "center", justifyContent: "center" },
+  sumIconWrap: { position: "absolute", right: -26, bottom: -8 },
+  levelBadge: {
+    position: "absolute", bottom: -4, left: "50%", transform: "translateX(-50%)",
+    background: "#0a0b10", color: "#fff", fontSize: 10, fontWeight: 700,
+    fontFamily: "'JetBrains Mono', monospace", letterSpacing: 0.5,
+    padding: "2px 8px", borderRadius: 10, border: "1.5px solid rgba(255,255,255,0.3)",
+    whiteSpace: "nowrap",
+  },
+  summoner: { textAlign: "center", marginTop: 4 },
+  summonerName: { fontSize: 34, fontWeight: 600, letterSpacing: -1, lineHeight: 1 },
+  summonerTag: { fontSize: 13, opacity: 0.65, marginTop: 4, letterSpacing: 1,
+                 fontFamily: "'JetBrains Mono', monospace" },
+  heroBottom: { position: "relative" },
+  lpBlock: { borderTop: "1px solid rgba(255,255,255,0.18)", paddingTop: 14 },
+  lpLbl: { fontSize: 10, letterSpacing: 2, opacity: 0.65,
+           fontFamily: "'JetBrains Mono', monospace", marginBottom: 4 },
+  lpNum: { fontSize: 44, fontWeight: 700, lineHeight: 1, letterSpacing: -1.5, fontFeatureSettings: '"tnum"' },
+  lpUnit: { fontSize: 15, opacity: 0.7, marginLeft: 8, fontWeight: 500 },
+  lpCurrent: { fontSize: 11, opacity: 0.75, marginTop: 6, letterSpacing: 1,
+               fontFamily: "'JetBrains Mono', monospace",
+               display: "flex", alignItems: "center", gap: 6 },
+  lpCurrentDot: { width: 5, height: 5, borderRadius: "50%", background: "rgba(255,255,255,0.6)" },
+  panel: { padding: "28px 36px 26px", display: "flex", flexDirection: "column", gap: 18 },
+  panelHd: { display: "flex", justifyContent: "space-between", alignItems: "center",
+             fontFamily: "'JetBrains Mono', monospace", fontSize: 11,
+             letterSpacing: 2, color: "#7a7468" },
+  panelHdL: { color: "#0e0e12", fontWeight: 700 },
+  panelHdR: {},
+  wrRow: { display: "flex", alignItems: "flex-end", gap: 18, justifyContent: "space-between" },
+  wrLbl: { fontSize: 11, letterSpacing: 2, color: "#7a7468",
+           fontFamily: "'JetBrains Mono', monospace", marginBottom: 4, fontWeight: 600 },
+  wrNum: { fontSize: 88, fontWeight: 300, letterSpacing: -3, lineHeight: 0.9,
+           fontFeatureSettings: '"tnum"', color: "#0e0e12" },
+  wrPct: { fontSize: 36, color: "#7a7468", marginLeft: 4, fontWeight: 400 },
+  wrChips: { display: "flex", gap: 8 },
+  wrChip: { display: "flex", flexDirection: "column", alignItems: "center",
+            padding: "10px 16px", borderRadius: 6, minWidth: 66 },
+  wrChipNum: { fontSize: 26, fontWeight: 600, letterSpacing: -0.5, lineHeight: 1,
+               fontFeatureSettings: '"tnum"', color: "#0e0e12" },
+  wrChipLbl: { fontSize: 9, letterSpacing: 1.5,
+               fontFamily: "'JetBrains Mono', monospace", marginTop: 4, fontWeight: 600 },
+  wrBar: { height: 5, background: "#eeeae0", borderRadius: 3, overflow: "hidden" },
+  wrBarFill: { height: "100%", borderRadius: 3 },
+  statGrid: { display: "grid", gridTemplateColumns: "1fr 1fr 1fr 1fr", gap: 0,
+              padding: "14px 0", borderTop: "1px solid #eeeae0", borderBottom: "1px solid #eeeae0" },
+  bstat: { padding: "2px 14px 2px 0", borderRight: "1px solid #eeeae0" },
+  bstatLbl: { fontSize: 10, letterSpacing: 1.8, color: "#7a7468",
+              fontFamily: "'JetBrains Mono', monospace", marginBottom: 6, fontWeight: 600 },
+  bstatVal: { fontSize: 38, fontWeight: 500, letterSpacing: -1, lineHeight: 1,
+              fontFeatureSettings: '"tnum"' },
+  bstatUnit: { fontSize: 18, color: "#7a7468", marginLeft: 2, fontWeight: 400 },
+  bstatSub: { fontSize: 11, color: "#7a7468", marginTop: 6,
+              fontFamily: "'JetBrains Mono', monospace", letterSpacing: 0.6 },
+  bottomRow: { display: "grid", gridTemplateColumns: "200px 1fr", gap: 20 },
+  roleCard: {
+    display: "flex", flexDirection: "column", gap: 10,
+    padding: "14px 14px", border: "1.5px solid", borderRadius: 8,
+  },
+  roleIconWrap: {
+    width: 52, height: 52, borderRadius: 8,
+    border: "1.5px solid", display: "flex",
+    alignItems: "center", justifyContent: "center", flexShrink: 0,
+  },
+  roleLbl: { fontSize: 9, letterSpacing: 2, color: "#7a7468",
+             fontFamily: "'JetBrains Mono', monospace", fontWeight: 600 },
+  roleName: { fontSize: 24, fontWeight: 600, letterSpacing: -0.4, color: "#0e0e12",
+              marginTop: 2, lineHeight: 1 },
+  roleMeta: { fontSize: 11, color: "#7a7468",
+              fontFamily: "'JetBrains Mono', monospace", letterSpacing: 0.6, marginTop: 2 },
+  champsSec: { display: "flex", flexDirection: "column", gap: 6 },
+  champsHd: { display: "flex", alignItems: "center", gap: 10,
+              fontSize: 10, letterSpacing: 2, color: "#7a7468",
+              fontFamily: "'JetBrains Mono', monospace", fontWeight: 600 },
+  champsHdLine: { flex: 1, height: 1, background: "#eeeae0" },
+  champsList: { display: "flex", flexDirection: "column", gap: 2 },
+  champRow: { display: "grid", gridTemplateColumns: "22px 34px 1fr auto",
+              alignItems: "center", gap: 12,
+              padding: "5px 0", borderBottom: "1px solid #f4f1ea" },
+  champRank: { fontSize: 10, color: "#b8b1a4", fontWeight: 600,
+               fontFamily: "'JetBrains Mono', monospace", letterSpacing: 0.5 },
+  champName: { fontSize: 15, fontWeight: 600, color: "#0e0e12",
+               letterSpacing: -0.2, whiteSpace: "nowrap",
+               overflow: "hidden", textOverflow: "ellipsis" },
+  champMeta: { fontSize: 10, color: "#7a7468", marginTop: 1,
+               fontFamily: "'JetBrains Mono', monospace", letterSpacing: 0.6 },
+  champWr: { fontSize: 22, fontWeight: 600, letterSpacing: -0.5,
+             fontFeatureSettings: '"tnum"' },
+  champWrPct: { fontSize: 13, opacity: 0.6, marginLeft: 1, fontWeight: 400 },
+};
+
+function App() {
+  const data = window.CARD_DATA;
+  const tier = window.CARD_TIER || "iron";
+
+  React.useEffect(() => {
+    document.fonts.ready.then(() => {
+      const root = document.getElementById("card-root");
+      if (root) root.dataset.ready = "1";
+    });
+  }, []);
+
+  return <CardRankTinted data={data} tier={tier} />;
+}
+
+ReactDOM.createRoot(document.getElementById("card-root")).render(<App />);
+</script>
+</body>
+</html>

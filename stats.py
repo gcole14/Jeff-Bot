@@ -72,6 +72,15 @@ class PlayerStats:
         self.champion_counts: dict = defaultdict(int)
         self.lp_change: int = 0  # Estimated LP change over period
 
+        # Extended period stats for card rendering
+        self.total_cs: int = 0
+        self.total_vision_score: int = 0
+        self.total_team_kills: int = 0
+        self.role_counts: dict = defaultdict(int)  # e.g. {"MID": 12, "JGL": 3}
+        self.champion_stats: dict = defaultdict(
+            lambda: {"games": 0, "wins": 0, "kills": 0, "deaths": 0, "assists": 0}
+        )
+
         # Error state
         self.error: Optional[str] = None
 
@@ -107,6 +116,31 @@ class PlayerStats:
 
     def formatted_kda(self) -> str:
         return f"{self.total_kills}/{self.total_deaths}/{self.total_assists} ({self.kda:.2f})"
+
+    @property
+    def cs_per_min(self) -> float:
+        mins = self.total_game_duration_seconds / 60
+        return self.total_cs / mins if mins > 0 else 0.0
+
+    @property
+    def avg_vision_score(self) -> float:
+        return self.total_vision_score / self.games_played if self.games_played > 0 else 0.0
+
+    @property
+    def kill_participation(self) -> float:
+        return (self.total_kills + self.total_assists) / max(self.total_team_kills, 1)
+
+    @property
+    def most_played_role(self) -> str:
+        if not self.role_counts:
+            return "MID"
+        return max(self.role_counts, key=lambda k: self.role_counts[k])
+
+    @property
+    def role_split(self) -> dict:
+        base = {"TOP": 0, "JGL": 0, "MID": 0, "ADC": 0, "SUP": 0}
+        base.update(self.role_counts)
+        return base
 
 
 class StatsAggregator:
@@ -185,17 +219,44 @@ class StatsAggregator:
                     continue
 
                 ps.games_played += 1
-                if player_data.get("win"):
+                win = player_data.get("win", False)
+                if win:
                     ps.wins += 1
                 else:
                     ps.losses += 1
 
-                ps.total_kills += player_data.get("kills", 0)
-                ps.total_deaths += player_data.get("deaths", 0)
-                ps.total_assists += player_data.get("assists", 0)
+                kills = player_data.get("kills", 0)
+                deaths = player_data.get("deaths", 0)
+                assists = player_data.get("assists", 0)
+                champ = player_data.get("championName", "Unknown")
+
+                ps.total_kills += kills
+                ps.total_deaths += deaths
+                ps.total_assists += assists
                 ps.total_damage_to_champions += player_data.get("totalDamageDealtToChampions", 0)
                 ps.total_game_duration_seconds += info.get("gameDuration", 0)
-                ps.champion_counts[player_data.get("championName", "Unknown")] += 1
+                ps.champion_counts[champ] += 1
+
+                # Extended stats
+                ps.total_cs += player_data.get("totalMinionsKilled", 0) + player_data.get("neutralMinionsKilled", 0)
+                ps.total_vision_score += player_data.get("visionScore", 0)
+
+                player_team_id = player_data.get("teamId")
+                team_kills = sum(p.get("kills", 0) for p in participants if p.get("teamId") == player_team_id)
+                ps.total_team_kills += team_kills
+
+                _ROLE_MAP = {"TOP": "TOP", "JUNGLE": "JGL", "MIDDLE": "MID", "BOTTOM": "ADC", "UTILITY": "SUP"}
+                role = _ROLE_MAP.get(player_data.get("teamPosition", ""), "")
+                if role:
+                    ps.role_counts[role] += 1
+
+                cstats = ps.champion_stats[champ]
+                cstats["games"] += 1
+                if win:
+                    cstats["wins"] += 1
+                cstats["kills"] += kills
+                cstats["deaths"] += deaths
+                cstats["assists"] += assists
 
         except RiotAPIError as e:
             logger.error(f"Riot API error for {riot_id}: {e}")

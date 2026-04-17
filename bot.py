@@ -20,6 +20,7 @@ from embeds import (
     build_promotion_embed, build_versus_embed, build_mastery_embed,
     build_damage_embed,
 )
+from card_renderer import CardRenderer
 
 logging.basicConfig(
     level=logging.INFO,
@@ -38,6 +39,7 @@ scheduler = AsyncIOScheduler(timezone=TIMEZONE)
 riot = RiotAPI()
 aggregator = StatsAggregator(riot)
 rank_tracker = RankTracker(aggregator, RANK_HISTORY_FILE)
+renderer = CardRenderer()
 
 
 async def post_daily():
@@ -64,9 +66,28 @@ async def post_weekly():
     logger.info("Posting weekly digest...")
     try:
         stats = await aggregator.get_weekly_stats()
-        embeds = build_weekly_embed(stats)
-        for embed in embeds:
-            await channel.send(embed=embed)
+        version = await riot.get_ddragon_latest_version()
+        end = datetime.now(timezone.utc)
+        start = end - timedelta(days=WEEKLY_MATCH_LOOKBACK_DAYS)
+        date_range = f"{start.strftime('%b %-d')} – {end.strftime('%b %-d, %Y')}"
+
+        active = [ps for ps in stats if not ps.error and ps.games_played > 0]
+        active.sort(key=lambda ps: ps.overall_rank_score, reverse=True)
+
+        if not active:
+            embeds = build_weekly_embed(stats)
+            for embed in embeds:
+                await channel.send(embed=embed)
+            return
+
+        for ps in active:
+            try:
+                card = await renderer.render_weekly_card(ps, version, date_range)
+                await channel.send(file=card)
+            except Exception as e:
+                logger.warning(f"Card render failed for {ps.display_name}, falling back to embed: {e}")
+                await channel.send(embed=build_player_snapshot_embed(ps))
+
         logger.info("Weekly digest posted successfully.")
     except Exception as e:
         logger.exception(f"Failed to post weekly digest: {e}")
@@ -90,6 +111,11 @@ async def check_rank_promotions():
 @bot.event
 async def on_ready():
     logger.info(f"Logged in as {bot.user} (ID: {bot.user.id})")
+
+    try:
+        await renderer.start()
+    except Exception as e:
+        logger.exception(f"Failed to start CardRenderer: {e}")
 
     try:
         synced = await bot.tree.sync()
@@ -184,7 +210,15 @@ async def slash_versus(interaction: discord.Interaction, player1: str, player2: 
             aggregator._fetch_player_stats(p1, start_epoch),
             aggregator._fetch_player_stats(p2, start_epoch),
         )
-        await interaction.followup.send(embed=build_versus_embed(a, b))
+        version = await riot.get_ddragon_latest_version()
+        end = datetime.now(timezone.utc)
+        date_range = f"{cutoff.strftime('%b %-d')} – {end.strftime('%b %-d, %Y')}"
+        try:
+            card = await renderer.render_versus_card(a, b, version, date_range)
+            await interaction.followup.send(file=card)
+        except Exception as render_err:
+            logger.warning(f"Versus card render failed, falling back to embed: {render_err}")
+            await interaction.followup.send(embed=build_versus_embed(a, b))
     except Exception as e:
         await interaction.followup.send(f"❌ Versus lookup failed: {e}")
 
