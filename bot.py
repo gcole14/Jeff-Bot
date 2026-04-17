@@ -87,9 +87,17 @@ async def check_rank_promotions():
         logger.exception(f"Rank promotion check failed: {e}")
 
 
+_setup_done = False
+
+
 @bot.event
 async def on_ready():
+    global _setup_done
     logger.info(f"Logged in as {bot.user} (ID: {bot.user.id})")
+
+    if _setup_done:
+        logger.info("Reconnect detected — skipping scheduler/sync setup.")
+        return
 
     try:
         synced = await bot.tree.sync()
@@ -122,6 +130,7 @@ async def on_ready():
     logger.info(f"Scheduler started. Daily at {DAILY_HOUR}:{DAILY_MINUTE:02d}, Weekly on {WEEKLY_DAY} at {WEEKLY_HOUR}:{WEEKLY_MINUTE:02d} ({TIMEZONE})")
 
     asyncio.create_task(rank_tracker.check_promotions())
+    _setup_done = True
 
 
 async def player_autocomplete(interaction: discord.Interaction, current: str) -> list[app_commands.Choice[str]]:
