@@ -4,13 +4,20 @@ import asyncio
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
 import logging
-from datetime import datetime
-import pytz
+from datetime import datetime, timedelta, timezone
 
-from config import DISCORD_TOKEN, CHANNEL_ID, DAILY_HOUR, DAILY_MINUTE, WEEKLY_DAY, WEEKLY_HOUR, WEEKLY_MINUTE, TIMEZONE
+from config import (
+    DISCORD_TOKEN, CHANNEL_ID,
+    DAILY_HOUR, DAILY_MINUTE, WEEKLY_DAY, WEEKLY_HOUR, WEEKLY_MINUTE, TIMEZONE,
+    WEEKLY_MATCH_LOOKBACK_DAYS,
+    RANK_CHECK_INTERVAL_HOURS, RANK_HISTORY_FILE,
+)
 from riot_api import RiotAPI
-from stats import StatsAggregator
-from embeds import build_daily_embed, build_weekly_embed
+from stats import StatsAggregator, RankTracker
+from embeds import (
+    build_daily_embed, build_weekly_embed, build_player_snapshot_embed,
+    build_promotion_embed, build_versus_embed, build_mastery_embed,
+)
 
 logging.basicConfig(
     level=logging.INFO,
@@ -28,6 +35,7 @@ bot = commands.Bot(command_prefix="!", intents=intents)
 scheduler = AsyncIOScheduler(timezone=TIMEZONE)
 riot = RiotAPI()
 aggregator = StatsAggregator(riot)
+rank_tracker = RankTracker(aggregator, RANK_HISTORY_FILE)
 
 
 async def post_daily():
@@ -62,6 +70,21 @@ async def post_weekly():
         logger.exception(f"Failed to post weekly digest: {e}")
 
 
+async def check_rank_promotions():
+    channel = bot.get_channel(CHANNEL_ID)
+    if not channel:
+        logger.error(f"Could not find channel {CHANNEL_ID}")
+        return
+    try:
+        promotions = await rank_tracker.check_promotions()
+        for promo in promotions:
+            await channel.send(embed=build_promotion_embed(promo))
+        if promotions:
+            logger.info(f"Posted {len(promotions)} promotion alert(s).")
+    except Exception as e:
+        logger.exception(f"Rank promotion check failed: {e}")
+
+
 @bot.event
 async def on_ready():
     logger.info(f"Logged in as {bot.user} (ID: {bot.user.id})")
@@ -82,8 +105,19 @@ async def on_ready():
         replace_existing=True
     )
 
+    # Rank promotion poller
+    scheduler.add_job(
+        check_rank_promotions,
+        CronTrigger(hour=f"*/{RANK_CHECK_INTERVAL_HOURS}", minute=0),
+        id="rank_promotion_check",
+        replace_existing=True,
+    )
+
     scheduler.start()
     logger.info(f"Scheduler started. Daily at {DAILY_HOUR}:{DAILY_MINUTE:02d}, Weekly on {WEEKLY_DAY} at {WEEKLY_HOUR}:{WEEKLY_MINUTE:02d} ({TIMEZONE})")
+
+    # Seed rank history silently on startup so the first real check has a baseline
+    asyncio.create_task(rank_tracker.check_promotions())
 
 
 @bot.command(name="daily")
@@ -114,6 +148,33 @@ async def player_stats(ctx, *, riot_id: str):
         await ctx.send(f"❌ Could not fetch stats for `{riot_id}`: {e}")
 
 
+@bot.command(name="versus")
+async def versus(ctx, player1: str, player2: str):
+    """Head-to-head comparison. Usage: !versus Name1#TAG Name2#TAG"""
+    await ctx.send(f"⏳ Comparing **{player1}** vs **{player2}**...")
+    try:
+        cutoff = datetime.now(timezone.utc) - timedelta(days=WEEKLY_MATCH_LOOKBACK_DAYS)
+        start_epoch = int(cutoff.timestamp())
+        a, b = await asyncio.gather(
+            aggregator._fetch_player_stats(player1, start_epoch),
+            aggregator._fetch_player_stats(player2, start_epoch),
+        )
+        await ctx.send(embed=build_versus_embed(a, b))
+    except Exception as e:
+        await ctx.send(f"❌ Versus lookup failed: {e}")
+
+
+@bot.command(name="mastery")
+async def mastery(ctx, *, riot_id: str):
+    """Top 10 champion mastery. Usage: !mastery Name#TAG"""
+    await ctx.send(f"⏳ Fetching mastery for **{riot_id}**...")
+    try:
+        data = await aggregator.get_champion_mastery(riot_id, count=10)
+        await ctx.send(embed=build_mastery_embed(data))
+    except Exception as e:
+        await ctx.send(f"❌ Could not fetch mastery for `{riot_id}`: {e}")
+
+
 @bot.command(name="lolhelp")
 async def lol_help(ctx):
     embed = discord.Embed(
@@ -123,7 +184,10 @@ async def lol_help(ctx):
     embed.add_field(name="!daily", value="Force a daily recap (admin only)", inline=False)
     embed.add_field(name="!weekly", value="Force a weekly digest (admin only)", inline=False)
     embed.add_field(name="!stats Name#TAG", value="Look up any player's current stats", inline=False)
+    embed.add_field(name="!versus Name1#TAG Name2#TAG", value="Head-to-head comparison of two players", inline=False)
+    embed.add_field(name="!mastery Name#TAG", value="Show top 10 champion mastery", inline=False)
     embed.add_field(name="!lolhelp", value="Show this message", inline=False)
+    embed.set_footer(text=f"Tier promotions are auto-announced every {RANK_CHECK_INTERVAL_HOURS}h")
     await ctx.send(embed=embed)
 
 

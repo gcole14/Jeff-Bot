@@ -34,3 +34,11 @@ WEEKLY_MINUTE = 0
 DAILY_MATCH_LOOKBACK_HOURS = 24    # How far back to look for daily stats
 WEEKLY_MATCH_LOOKBACK_DAYS = 7     # How far back for weekly stats
 MAX_MATCHES_PER_PLAYER = 20        # Max matches to fetch per player per period
+
+# --- Rank tracker ---
+RANK_CHECK_INTERVAL_HOURS = int(os.getenv("RANK_CHECK_INTERVAL_HOURS", "2"))
+RANK_HISTORY_FILE = os.getenv("RANK_HISTORY_FILE", "rank_history.json")
+
+# --- Data Dragon ---
+DDRAGON_VERSIONS_URL = "https://ddragon.leagueoflegends.com/api/versions.json"
+DDRAGON_CHAMPION_URL = "https://ddragon.leagueoflegends.com/cdn/{version}/data/en_US/champion.json"

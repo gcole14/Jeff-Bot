@@ -1,13 +1,16 @@
 import aiohttp
 import asyncio
 import logging
+import time
 from typing import Optional
-from config import RIOT_API_KEY, REGION, ROUTING
+from config import RIOT_API_KEY, REGION, ROUTING, DDRAGON_VERSIONS_URL, DDRAGON_CHAMPION_URL
 
 logger = logging.getLogger(__name__)
 
 BASE_PLATFORM = f"https://{REGION}.api.riotgames.com"
 BASE_ROUTING = f"https://{ROUTING}.api.riotgames.com"
+
+DDRAGON_CACHE_TTL_SECONDS = 24 * 3600
 
 
 class RiotAPIError(Exception):
@@ -20,11 +23,27 @@ class RiotAPI:
     def __init__(self):
         self.headers = {"X-Riot-Token": RIOT_API_KEY}
         self._session: Optional[aiohttp.ClientSession] = None
+        self._public_session: Optional[aiohttp.ClientSession] = None
+        self._ddragon_version_cache: Optional[tuple[str, float]] = None
+        self._ddragon_champion_cache: dict[str, dict] = {}
 
     async def _get_session(self) -> aiohttp.ClientSession:
         if self._session is None or self._session.closed:
             self._session = aiohttp.ClientSession(headers=self.headers)
         return self._session
+
+    async def _get_public_session(self) -> aiohttp.ClientSession:
+        if self._public_session is None or self._public_session.closed:
+            self._public_session = aiohttp.ClientSession()
+        return self._public_session
+
+    async def _get_public(self, url: str):
+        """Unauthenticated GET for Data Dragon CDN (no X-Riot-Token)."""
+        session = await self._get_public_session()
+        async with session.get(url) as resp:
+            if resp.status != 200:
+                raise RiotAPIError(resp.status, f"Data Dragon: {await resp.text()}")
+            return await resp.json()
 
     async def _get(self, url: str, retries: int = 3) -> dict:
         session = await self._get_session()
@@ -106,6 +125,40 @@ class RiotAPI:
         url = f"{BASE_ROUTING}/lol/match/v5/matches/{match_id}/timeline"
         return await self._get(url)
 
+    # -------------------------------------------------------------------------
+    # Champion mastery
+    # -------------------------------------------------------------------------
+
+    async def get_champion_masteries_top(self, puuid: str, count: int = 10) -> list:
+        """Returns top N champion masteries for a player."""
+        url = f"{BASE_PLATFORM}/lol/champion-mastery/v4/champion-masteries/by-puuid/{puuid}/top?count={count}"
+        return await self._get(url)
+
+    # -------------------------------------------------------------------------
+    # Data Dragon (champion metadata)
+    # -------------------------------------------------------------------------
+
+    async def get_ddragon_latest_version(self) -> str:
+        now = time.time()
+        if self._ddragon_version_cache:
+            version, fetched_at = self._ddragon_version_cache
+            if now - fetched_at < DDRAGON_CACHE_TTL_SECONDS:
+                return version
+        versions = await self._get_public(DDRAGON_VERSIONS_URL)
+        version = versions[0]
+        self._ddragon_version_cache = (version, now)
+        return version
+
+    async def get_ddragon_champions(self, version: str) -> dict:
+        """Returns parsed champion.json payload (cached per version)."""
+        if version in self._ddragon_champion_cache:
+            return self._ddragon_champion_cache[version]
+        data = await self._get_public(DDRAGON_CHAMPION_URL.format(version=version))
+        self._ddragon_champion_cache[version] = data
+        return data
+
     async def close(self):
         if self._session and not self._session.closed:
             await self._session.close()
+        if self._public_session and not self._public_session.closed:
+            await self._public_session.close()

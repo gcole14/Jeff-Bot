@@ -1,6 +1,6 @@
 import discord
 from datetime import datetime, timezone
-from stats import PlayerStats
+from stats import PlayerStats, format_rank
 
 # LoL gold color
 LOL_GOLD = 0xC89B3C
@@ -206,4 +206,126 @@ def build_player_snapshot_embed(ps: PlayerStats) -> discord.Embed:
     else:
         embed.description = f"{_rank_emote(ps.solo_tier)} {ps.formatted_rank()}\n*No games in the last 24 hours.*"
 
+    return embed
+
+
+def build_promotion_embed(promo: dict) -> discord.Embed:
+    """Celebration embed when a player goes up a tier."""
+    old_emote = _rank_emote(promo["old_tier"])
+    new_emote = _rank_emote(promo["new_tier"])
+    old_fmt = format_rank(promo["old_tier"], promo["old_rank"], promo["old_lp"])
+    new_fmt = format_rank(promo["new_tier"], promo["new_rank"], promo["new_lp"])
+
+    embed = discord.Embed(
+        title=f"🎉 {promo['display_name']} Promoted!",
+        description=f"{old_emote} **{promo['old_tier'].capitalize()}** ➡️ {new_emote} **{promo['new_tier'].capitalize()}**",
+        color=LOL_GOLD,
+        timestamp=datetime.now(timezone.utc),
+    )
+    embed.add_field(name="Previous Rank", value=old_fmt, inline=True)
+    embed.add_field(name="New Rank", value=new_fmt, inline=True)
+    embed.set_footer(text="Congrats! 🏆")
+    return embed
+
+
+def _versus_row(embed: discord.Embed, label: str, a_val: str, b_val: str, a_wins: bool, b_wins: bool) -> None:
+    """Adds a comparison row (player A | label | player B) as three inline fields."""
+    a_prefix = "🏆 " if a_wins else ""
+    b_prefix = "🏆 " if b_wins else ""
+    embed.add_field(name="\u200b", value=f"{a_prefix}**{a_val}**", inline=True)
+    embed.add_field(name=label, value="⚔️", inline=True)
+    embed.add_field(name="\u200b", value=f"{b_prefix}**{b_val}**", inline=True)
+
+
+def _winner(v1, v2) -> tuple[bool, bool]:
+    if v1 == v2:
+        return False, False
+    return (v1 > v2, v2 > v1)
+
+
+def build_versus_embed(a: PlayerStats, b: PlayerStats) -> discord.Embed:
+    """Side-by-side comparison of two players over the last week."""
+    embed = discord.Embed(
+        title=f"⚔️ {a.display_name} vs {b.display_name}",
+        color=LOL_BLUE,
+        timestamp=datetime.now(timezone.utc),
+    )
+    embed.set_footer(text="Weekly comparison")
+
+    if a.error or b.error:
+        issues = []
+        if a.error:
+            issues.append(f"{a.display_name}: `{a.error}`")
+        if b.error:
+            issues.append(f"{b.display_name}: `{b.error}`")
+        embed.description = "⚠️ Could not load one or both players:\n" + "\n".join(issues)
+        embed.colour = LOL_RED
+        return embed
+
+    # Header row with player names
+    embed.add_field(name=a.display_name, value=f"{_rank_emote(a.solo_tier)}", inline=True)
+    embed.add_field(name="\u200b", value="\u200b", inline=True)
+    embed.add_field(name=b.display_name, value=f"{_rank_emote(b.solo_tier)}", inline=True)
+
+    # Rank
+    a_win, b_win = _winner(a.overall_rank_score, b.overall_rank_score)
+    _versus_row(embed, "Rank", a.formatted_rank(), b.formatted_rank(), a_win, b_win)
+
+    # Games played
+    a_win, b_win = _winner(a.games_played, b.games_played)
+    _versus_row(embed, "Games", str(a.games_played), str(b.games_played), a_win, b_win)
+
+    # Win rate
+    a_win, b_win = _winner(a.win_rate, b.win_rate)
+    _versus_row(embed, "Win Rate", f"{a.win_rate:.0f}%", f"{b.win_rate:.0f}%", a_win, b_win)
+
+    # W/L
+    a_win, b_win = _winner(a.wins, b.wins)
+    _versus_row(embed, "W / L", f"{a.wins}W {a.losses}L", f"{b.wins}W {b.losses}L", a_win, b_win)
+
+    # KDA
+    a_win, b_win = _winner(a.kda, b.kda)
+    _versus_row(embed, "KDA", f"{a.kda:.2f}", f"{b.kda:.2f}", a_win, b_win)
+
+    # Hours
+    a_win, b_win = _winner(a.hours_played, b.hours_played)
+    _versus_row(embed, "Hours", f"{a.hours_played:.1f}h", f"{b.hours_played:.1f}h", a_win, b_win)
+
+    # Top champion (informational, no trophy)
+    a_top = a.top_champions[0][0] if a.top_champions else "N/A"
+    b_top = b.top_champions[0][0] if b.top_champions else "N/A"
+    _versus_row(embed, "Top Champ", a_top, b_top, False, False)
+
+    return embed
+
+
+def build_mastery_embed(mastery: dict) -> discord.Embed:
+    """Top-N champion mastery embed."""
+    if mastery.get("error"):
+        embed = discord.Embed(
+            title=f"🧙 {mastery['display_name']}'s Top Champions",
+            description=f"⚠️ Error: `{mastery['error']}`",
+            color=LOL_RED,
+            timestamp=datetime.now(timezone.utc),
+        )
+        return embed
+
+    masteries = mastery.get("masteries", [])
+    if not masteries:
+        description = "*No mastery data available.*"
+    else:
+        lines = []
+        for i, m in enumerate(masteries, 1):
+            lines.append(f"**{i}.** {m['name']} — Level {m['level']} • {m['points']:,} pts")
+        description = "\n".join(lines)
+
+    embed = discord.Embed(
+        title=f"🧙 {mastery['display_name']}'s Top Champions",
+        description=description,
+        color=LOL_GOLD,
+        timestamp=datetime.now(timezone.utc),
+    )
+    version = mastery.get("version")
+    footer = f"Patch {version}" if version else "Champion mastery"
+    embed.set_footer(text=footer)
     return embed

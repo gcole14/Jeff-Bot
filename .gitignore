@@ -1,4 +1,6 @@
 .env
+rank_history.json
+bot.log
 __pycache__/
 *.pyc
 *.pyo
