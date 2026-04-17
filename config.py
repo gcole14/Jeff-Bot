@@ -14,10 +14,10 @@ ROUTING = os.getenv("ROUTING", "americas")    # americas, europe, asia (for matc
 
 # --- Your friend group (Riot IDs: "Name#TAG") ---
 SUMMONERS = [
-    "YourName#NA1",
-    "Friend1#NA1",
-    "Friend2#NA1",
-    # Add more friends here
+    "WarrenGetty#Oil",
+    "31Sec#LCPM",
+    "SwimboSlice#pizza",
+    "H1ph0pp3r#8008",
 ]
 
 # --- Schedule ---
