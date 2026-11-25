@@ -92,6 +92,12 @@ class Database:
                 match_id TEXT PRIMARY KEY,
                 announced_at INTEGER NOT NULL
             );
+
+            CREATE TABLE IF NOT EXISTS discord_links (
+                discord_user_id TEXT PRIMARY KEY,
+                riot_id TEXT NOT NULL,
+                linked_at INTEGER NOT NULL
+            );
             """
         )
         self._conn.commit()
@@ -397,6 +403,31 @@ class Database:
     def count_announced_matches(self) -> int:
         cur = self._conn.execute("SELECT COUNT(*) FROM announced_matches")
         return int(cur.fetchone()[0])
+
+    # -------------------------------------------------------------------------
+    # Discord user -> Riot ID links (for zero-arg /build, etc.)
+    # -------------------------------------------------------------------------
+
+    def link_discord_user(self, discord_user_id: int, riot_id: str) -> None:
+        self._conn.execute(
+            """
+            INSERT INTO discord_links (discord_user_id, riot_id, linked_at)
+            VALUES (?, ?, ?)
+            ON CONFLICT(discord_user_id) DO UPDATE SET
+                riot_id = excluded.riot_id,
+                linked_at = excluded.linked_at
+            """,
+            (str(discord_user_id), riot_id, int(time.time())),
+        )
+        self._conn.commit()
+
+    def get_linked_riot_id(self, discord_user_id: int) -> Optional[str]:
+        cur = self._conn.execute(
+            "SELECT riot_id FROM discord_links WHERE discord_user_id = ?",
+            (str(discord_user_id),),
+        )
+        row = cur.fetchone()
+        return row["riot_id"] if row else None
 
     # -------------------------------------------------------------------------
     # Legacy migration

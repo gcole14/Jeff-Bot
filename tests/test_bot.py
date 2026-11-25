@@ -245,6 +245,8 @@ def test_full_pipeline_caching_coaching_scout_debrief_and_embeds(tmp_path):
     db = Database(str(tmp_path / "test.db"))
     db.seed_roster(["Cookmysock#cook", "SwimboSlice#pizza"])
     assert db.get_roster() == ["Cookmysock#cook", "SwimboSlice#pizza"]
+    db.link_discord_user(123456789, "Cookmysock#cook")
+    assert db.get_linked_riot_id(123456789) == "Cookmysock#cook"
 
     now = int(time.time())
     db.record_rank_snapshot("puuid-a", "Cookmysock#cook", "GOLD", "II", 50, 10, 10, recorded_at=now - 7200)

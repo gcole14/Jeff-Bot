@@ -468,36 +468,76 @@ async def slash_lastgame(interaction: discord.Interaction, player: str):
         await interaction.followup.send(f"❌ Could not fetch last game for `{resolved}`: {e}")
 
 
-@bot.tree.command(name="build", description="Recommended item build path & runes tailored to your lobby")
+@bot.tree.command(name="link", description="Link your Discord account to your Riot ID for 1-click /build")
+@app_commands.describe(player="Your Riot ID nickname (tracked) or full Name#TAG")
+@app_commands.autocomplete(player=player_autocomplete)
+async def slash_link(interaction: discord.Interaction, player: str):
+    try:
+        resolved = resolve_riot_id(player, aggregator.get_roster())
+    except ValueError as e:
+        await interaction.response.send_message(f"❌ {e}", ephemeral=True)
+        return
+    db.link_discord_user(interaction.user.id, resolved)
+    await interaction.response.send_message(
+        f"✅ Linked your Discord account to **`{resolved}`**! Now you can just run `/build` with no arguments whenever you're in a game.",
+        ephemeral=True,
+    )
+
+
+async def _detect_live_lobby(riot_id: str) -> Optional[dict]:
+    """Returns live lobby info (champion, allies, enemies, queue_name) if player is in-game."""
+    puuid, _, _ = await aggregator._resolve_player(riot_id)
+    live_game = await riot.get_active_game(puuid)
+    if not live_game:
+        return None
+    _, champ_map = await aggregator._get_champion_name_map()
+    parts = live_game.get("participants", [])
+    me = next((p for p in parts if p.get("puuid") == puuid), None)
+    my_tid = int(me.get("teamId", 100)) if me else 100
+    qid = int(live_game.get("gameQueueConfigId", 0))
+    from stats import queue_name as _qname
+    return {
+        "riot_id": riot_id,
+        "display_name": riot_id.split("#", 1)[0],
+        "champion": champ_map.get(int(me.get("championId", 0)), "") if me else "",
+        "enemies": [
+            champ_map.get(int(p.get("championId", 0)), "Unknown")
+            for p in parts
+            if int(p.get("teamId", -1)) != my_tid
+        ],
+        "allies": [
+            champ_map.get(int(p.get("championId", 0)), "Unknown")
+            for p in parts
+            if int(p.get("teamId", -1)) == my_tid and p.get("puuid") != puuid
+        ],
+        "queue_id": qid,
+        "queue_name": _qname(qid),
+    }
+
+
+@bot.tree.command(name="build", description="Adaptive build path & runes — auto-detects live games or takes manual champs")
 @app_commands.describe(
-    champion="Your champion (optional if 'player' is currently in a live game)",
-    enemies="Enemy champions, comma-separated (e.g. Malphite, Zed, Mundo, Jinx, Soraka)",
-    allies="Optional ally champions, comma-separated",
+    player="Optional player to auto-detect from their live game (leave blank to auto-detect you!)",
+    champion="Optional manual champion override (for champ select / theorycrafting)",
+    enemies="Optional enemy champions, comma-separated (auto-filled if in a live game)",
+    allies="Optional ally champions, comma-separated (auto-filled if in a live game)",
     role="Optional role",
-    player="Optional player currently in a live game (auto-fills all 10 champions!)",
     notes="Optional notes (e.g. 'enemy Zed is 5-0', 'need frontline', 'ARAM')",
 )
 @app_commands.choices(role=ROLE_CHOICES)
 @app_commands.autocomplete(player=player_autocomplete)
 async def slash_build(
     interaction: discord.Interaction,
+    player: Optional[str] = None,
     champion: Optional[str] = None,
     enemies: Optional[str] = None,
     allies: Optional[str] = None,
     role: str = "",
-    player: Optional[str] = None,
     notes: str = "",
 ):
     if not deepseek.is_configured:
         await interaction.response.send_message(
             "⚠️ DeepSeek AI is not configured yet. Add `DEEPSEEK_API_KEY` to `.env` to unlock `/build`.",
-            ephemeral=True,
-        )
-        return
-    if not champion and not player:
-        await interaction.response.send_message(
-            "❌ Pass either `champion` (e.g. `/build champion:Ahri enemies:Malphite, Zed, Mundo`) "
-            "or `player` while they are in a live game!",
             ephemeral=True,
         )
         return
@@ -507,45 +547,86 @@ async def slash_build(
         enemy_list = [e.strip() for e in (enemies or "").split(",") if e.strip()]
         ally_list = [a.strip() for a in (allies or "").split(",") if a.strip()]
         chosen_champ = (champion or "").strip()
+        extra_notes = notes.strip()
+        detected_for: Optional[str] = None
 
-        # Auto-detect live lobby if player was provided
-        if player:
-            try:
-                resolved = resolve_riot_id(player, aggregator.get_roster())
-                puuid, _, _ = await aggregator._resolve_player(resolved)
-                live_game = await riot.get_active_game(puuid)
-                if live_game:
-                    _, champ_map = await aggregator._get_champion_name_map()
-                    parts = live_game.get("participants", [])
-                    me = next((p for p in parts if p.get("puuid") == puuid), None)
-                    my_tid = int(me.get("teamId", 100)) if me else 100
-                    if me and not chosen_champ:
-                        chosen_champ = champ_map.get(int(me.get("championId", 0)), "")
-                    if not enemy_list:
-                        enemy_list = [
-                            champ_map.get(int(p.get("championId", 0)), "Unknown")
-                            for p in parts
-                            if int(p.get("teamId", -1)) != my_tid
-                        ]
-                    if not ally_list:
-                        ally_list = [
-                            champ_map.get(int(p.get("championId", 0)), "Unknown")
-                            for p in parts
-                            if int(p.get("teamId", -1)) == my_tid and p.get("puuid") != puuid
-                        ]
-                elif not chosen_champ:
+        # Auto-detect live game whenever champion wasn't manually provided (or player was passed)
+        if not chosen_champ or player:
+            lobby: Optional[dict] = None
+            target_riot_id: Optional[str] = None
+
+            if player:
+                try:
+                    target_riot_id = resolve_riot_id(player, aggregator.get_roster())
+                except ValueError as e:
+                    await interaction.followup.send(f"❌ {e}")
+                    return
+                lobby = await _detect_live_lobby(target_riot_id)
+                if not lobby and not chosen_champ:
                     await interaction.followup.send(
-                        f"ℹ️ `{player}` isn't currently in a live game. Pass `champion` manually "
-                        "(e.g. `/build champion:Ahri enemies:Zed, Malphite, Mundo`)!"
+                        f"ℹ️ `{target_riot_id.split('#', 1)[0]}` isn't currently in a live game. "
+                        "Run `/build` once you're on the loading screen, or pass `champion:` manually!"
                     )
                     return
-            except Exception as e:
+            else:
+                # 1. Try caller's linked Riot ID first
+                linked_id = db.get_linked_riot_id(interaction.user.id)
+                if linked_id:
+                    lobby = await _detect_live_lobby(linked_id)
+
+                # 2. If not linked or not in game, scan the 4 tracked squad members
+                if not lobby:
+                    roster = aggregator.get_roster()
+                    checked = await asyncio.gather(
+                        *[_detect_live_lobby(rid) for rid in roster],
+                        return_exceptions=True,
+                    )
+                    live_lobbies = [c for c in checked if isinstance(c, dict)]
+
+                    if len(live_lobbies) == 1:
+                        lobby = live_lobbies[0]
+                    elif len(live_lobbies) > 1:
+                        # Prefer a lobby whose Riot name matches caller's Discord name
+                        u_names = {
+                            interaction.user.name.lower(),
+                            interaction.user.display_name.lower(),
+                        }
+                        matched = next(
+                            (lb for lb in live_lobbies if lb["display_name"].lower() in u_names),
+                            None,
+                        )
+                        if matched:
+                            lobby = matched
+                        else:
+                            live_names = ", ".join(f"`{lb['display_name']}` ({lb['champion']})" for lb in live_lobbies)
+                            await interaction.followup.send(
+                                f"🟢 Multiple squadmates are in-game right now: {live_names}.\n"
+                                "Run `/build player:<name>`, or run `/link <your-name>` once so plain `/build` always picks you automatically!"
+                            )
+                            return
+                    else:
+                        await interaction.followup.send(
+                            "ℹ️ Nobody in the squad is currently in a live game.\n"
+                            "• **In loading screen / in-game:** just run `/build` (run `/link` once so it always knows who you are)\n"
+                            "• **In champ select:** pass `champion:` manually, e.g. `/build champion:Ahri enemies:Malphite, Zed, Mundo`"
+                        )
+                        return
+
+            if lobby:
+                detected_for = f"{lobby['display_name']} ({lobby['queue_name']})"
                 if not chosen_champ:
-                    await interaction.followup.send(f"❌ Live lookup failed: {e}")
-                    return
+                    chosen_champ = lobby["champion"]
+                if not enemy_list:
+                    enemy_list = lobby["enemies"]
+                if not ally_list:
+                    ally_list = lobby["allies"]
+                if lobby["queue_id"] == 450 and "aram" not in extra_notes.lower():
+                    extra_notes = f"ARAM mode. {extra_notes}".strip()
+                elif lobby["queue_id"] == 1700 and "arena" not in extra_notes.lower():
+                    extra_notes = f"Arena mode. {extra_notes}".strip()
 
         if not chosen_champ:
-            await interaction.followup.send("❌ Could not determine champion — please specify `champion`.")
+            await interaction.followup.send("❌ Could not determine champion — please specify `champion:`.")
             return
 
         try:
@@ -559,7 +640,7 @@ async def slash_build(
             allies=ally_list,
             role=role,
             patch=patch,
-            notes=notes,
+            notes=extra_notes,
         )
         if not build:
             await interaction.followup.send("❌ DeepSeek didn't return a build — try again in a second.")
@@ -596,7 +677,9 @@ async def slash_build(
             role=role,
             patch=patch_ver or patch,
         )
+        header_msg = f"🟢 Auto-detected live game for **{detected_for}**" if detected_for else None
         await interaction.followup.send(
+            content=header_msg,
             file=discord.File(card_buf, filename=f"{chosen_champ.lower()}_build.png"),
             embed=embed,
         )
@@ -1111,7 +1194,7 @@ async def slash_help(interaction: discord.Interaction):
     )
     embed.add_field(
         name="⚙️ Admin & Ops",
-        value="`/roster list | add | remove` • `/daily` • `/weekly` • `/setriotkey` • `/status`",
+        value="`/link player` • `/roster list | add | remove` • `/daily` • `/weekly` • `/setriotkey` • `/status`",
         inline=False,
     )
     embed.set_footer(
