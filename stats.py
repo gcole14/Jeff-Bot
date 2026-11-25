@@ -969,6 +969,7 @@ class StatsAggregator:
         stats = await asyncio.gather(*[self._fetch_player_stats(rid, start_epoch) for rid in roster])
         data = self.compute_synergy(stats)
         data["days"] = days
+        data["profile_icons"] = {ps.display_name: ps.profile_icon_id for ps in stats}
         return data
 
     async def get_live_games(self) -> list[dict]:
@@ -1069,7 +1070,7 @@ class StatsAggregator:
 
     async def fetch_rank_only(self, riot_id: str) -> dict:
         try:
-            puuid, _, _ = await self._resolve_player(riot_id)
+            puuid, _, icon = await self._resolve_player(riot_id)
             ranked = await self.riot.get_ranked_stats_by_puuid(puuid)
             tier, rank, lp, wins, losses = "UNRANKED", "", 0, 0, 0
             for entry in ranked:
@@ -1082,6 +1083,7 @@ class StatsAggregator:
             return {
                 "riot_id": riot_id,
                 "puuid": puuid,
+                "profile_icon_id": icon,
                 "tier": tier,
                 "rank": rank,
                 "lp": lp,
@@ -1235,6 +1237,7 @@ class RankTracker:
                             "riot_id": riot_id,
                             "display_name": riot_id.split("#", 1)[0],
                             "puuid": puuid,
+                            "profile_icon_id": snapshot.get("profile_icon_id", 0),
                             "old_tier": prev["tier"],
                             "old_rank": prev.get("rank", ""),
                             "old_lp": prev.get("lp", 0),
@@ -1248,6 +1251,7 @@ class RankTracker:
                             "riot_id": riot_id,
                             "display_name": riot_id.split("#", 1)[0],
                             "puuid": puuid,
+                            "profile_icon_id": snapshot.get("profile_icon_id", 0),
                             "old_tier": prev["tier"],
                             "old_rank": prev.get("rank", ""),
                             "old_lp": prev.get("lp", 0),

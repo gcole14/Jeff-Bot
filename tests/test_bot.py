@@ -413,9 +413,18 @@ def test_full_pipeline_caching_coaching_scout_debrief_and_embeds(tmp_path):
     from cards import (
         AssetCache,
         render_build_card,
+        render_coach_card,
+        render_damage_card,
+        render_debrief_card,
+        render_goal_card,
+        render_mastery_card,
         render_match_card,
         render_player_card,
+        render_pool_card,
+        render_rank_change_card,
+        render_scout_card,
         render_squad_card,
+        render_synergy_card,
         render_versus_card,
     )
 
@@ -436,6 +445,16 @@ def test_full_pipeline_caching_coaching_scout_debrief_and_embeds(tmp_path):
         asyncio.run(render_player_card(a, offline_assets, days=7)),
         asyncio.run(render_versus_card(a, b, offline_assets)),
         asyncio.run(render_squad_card(stats_again, "Daily", "Test", offline_assets)),
+        asyncio.run(render_scout_card(scout, offline_assets)),
+        asyncio.run(render_debrief_card(debriefs[0], offline_assets)),
+        asyncio.run(render_pool_card(a, pool, offline_assets, days=30)),
+        asyncio.run(render_coach_card(a, split, offline_assets, days=14)),
+        asyncio.run(render_synergy_card(syn, offline_assets)),
+        asyncio.run(render_mastery_card({"display_name": "Cookmysock", "profile_icon_id": 1234, "version": "14.23.1", "masteries": [{"name": "Ahri", "level": 7, "points": 120000}, {"name": "LeeSin", "level": 6, "points": 80000}]}, offline_assets)),
+        asyncio.run(render_damage_card(stats_again, offline_assets)),
+        asyncio.run(render_rank_change_card(events[0], offline_assets)),
+        asyncio.run(render_rank_change_card(events[1], offline_assets)),
+        asyncio.run(render_goal_card("Cookmysock", 1234, ev, offline_assets, is_new=True)),
         asyncio.run(
             render_match_card(
                 "Cookmysock", "Ahri", True, "Ranked Solo", 1800, 10, 2, 8, 210, 7.0,

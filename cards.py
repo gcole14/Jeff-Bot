@@ -1294,3 +1294,684 @@ async def render_build_card(
 
     _draw_footer(canvas, "ADAPTIVE BUILD ENGINE  •  JEFF BOT")
     return _to_png_bytes(canvas)
+
+
+# -------------------------------------------------------------------------
+# 6. Loading-Screen 5v5 Scout Card (/scout)
+# -------------------------------------------------------------------------
+
+def _tier_from_rank_str(rank_str: str) -> str:
+    if not rank_str:
+        return "UNRANKED"
+    return rank_str.split()[0].upper()
+
+
+async def render_scout_card(scout: dict, assets: AssetCache) -> io.BytesIO:
+    W, H = 1400, 820
+    allies = scout.get("allies", [])[:5]
+    enemies = scout.get("enemies", [])[:5]
+    all_players = allies + enemies
+
+    champ_tasks = [assets.get_champion_icon(p["champion"]) for p in all_players]
+    emb_tasks = [assets.get_rank_emblem(_tier_from_rank_str(p.get("rank", ""))) for p in all_players]
+    fetched = await asyncio.gather(*champ_tasks, *emb_tasks)
+    c_imgs = fetched[: len(all_players)]
+    e_imgs = fetched[len(all_players) :]
+
+    canvas = _render_ascii_backdrop(W, H)
+    d = ImageDraw.Draw(canvas)
+
+    mins = max(0, scout.get("length_seconds", 0)) // 60
+    _spaced_text(d, (58, 42), "LIVE MATCH SCOUT", _font(16, weight="Bold", mono=True), (112, 214, 255, 245), tracking=3.2)
+    d.text((58, 68), f"{scout['display_name']} — {_display_champ_name(scout.get('player_champ', ''))}", font=_font(44, weight="SemiBold"), fill=(246, 250, 255, 255))
+    _spaced_text(d, (60, 128), f"{scout.get('queue_name', 'MATCH').upper()}  •  {mins}M IN", _font(15, weight="Regular", mono=True), (154, 180, 214, 235), tracking=2.2)
+
+    def _draw_side(side_players: list[dict], img_offset: int, x0: int, header: str, h_col: tuple, ring_pair: tuple):
+        panel_w, panel_h = 626, 568
+        panel = Image.new("RGBA", (panel_w, panel_h), (0, 0, 0, 0))
+        pd = ImageDraw.Draw(panel)
+        pd.rounded_rectangle((0, 0, panel_w - 1, panel_h - 1), radius=16, fill=(9, 16, 30, 212), outline=(*h_col[:3], 130), width=2)
+        canvas.alpha_composite(panel, (x0, 174))
+
+        _spaced_text(d, (x0 + 24, 190), header, _font(16, weight="Bold", mono=True), (*h_col[:3], 245), tracking=2.8)
+        d.line([(x0 + 22, 218), (x0 + panel_w - 22, 218)], fill=(52, 74, 110, 165), width=1)
+
+        for idx, p in enumerate(side_players):
+            ry = 232 + idx * 100
+            if idx > 0:
+                d.line([(x0 + 22, ry - 8), (x0 + panel_w - 22, ry - 8)], fill=(34, 52, 82, 130), width=1)
+
+            r1, r2 = ((236, 192, 92), (92, 224, 255)) if p.get("is_target") else ring_pair
+            _paste_circular_portrait(canvas, c_imgs[img_offset + idx], (x0 + 58, ry + 42), 68, r1, r2, 3, p["champion"])
+
+            cname = _display_champ_name(p["champion"])[:14]
+            d.text((x0 + 108, ry + 14), cname, font=_font(22, weight="SemiBold"), fill=(246, 250, 255, 255))
+            star = " ★" if p.get("is_target") else ""
+            d.text((x0 + 108, ry + 46), f"{p['name'][:16]}{star}", font=_font(15, weight="Regular", mono=True), fill=(154, 178, 210, 235))
+
+            # Rank emblem + rank text
+            _paste_rank_emblem(canvas, e_imgs[img_offset + idx], (x0 + 292, ry + 14, 56, 56))
+            rank_short = p.get("rank", "Unranked").replace(" — ", " ")
+            d.text((x0 + 356, ry + 18), rank_short[:16], font=_font(16, weight="SemiBold", mono=True), fill=(224, 234, 248, 245))
+            pts = p.get("mastery_pts", 0)
+            pts_str = f"{pts // 1000}k pts" if pts >= 1000 else f"{pts} pts"
+            wr_str = f" • {p['solo_wr']}% WR" if p.get("solo_wr") is not None else ""
+            d.text((x0 + 356, ry + 44), f"{pts_str}{wr_str}", font=_font(14, weight="Regular", mono=True), fill=(148, 172, 204, 230))
+
+            # Status pill (Hot / Tilt / New)
+            badge_txt, badge_bg, badge_fg = None, None, None
+            st = p.get("streak", 0)
+            if st <= -3:
+                badge_txt, badge_bg, badge_fg = f"TILT {abs(st)}L", (120, 28, 42, 220), (255, 134, 142, 255)
+            elif st >= 3:
+                badge_txt, badge_bg, badge_fg = f"HOT {st}W", (20, 96, 62, 220), (96, 242, 162, 255)
+            elif pts < 5000:
+                badge_txt, badge_bg, badge_fg = "NEW", (84, 48, 134, 220), (214, 168, 255, 255)
+
+            if badge_txt:
+                bx = x0 + panel_w - 20
+                d.rounded_rectangle((bx - 88, ry + 26, bx, ry + 56), radius=8, fill=badge_bg)
+                d.text((bx - 44, ry + 41), badge_txt, font=_font(13, weight="Bold", mono=True), fill=badge_fg, anchor="mm")
+
+    _draw_side(allies, 0, 58, "YOUR TEAM", (92, 214, 255), ((86, 204, 255), (104, 136, 242)))
+    _draw_side(enemies, len(allies), 716, "ENEMY TEAM", (255, 108, 118), ((255, 98, 114), (186, 62, 118)))
+
+    _draw_footer(canvas, "LOADING-SCREEN SCOUT  •  JEFF BOT")
+    return _to_png_bytes(canvas)
+
+
+# -------------------------------------------------------------------------
+# 7. Squad Post-Game Debrief Card (/debrief & Auto Debriefs)
+# -------------------------------------------------------------------------
+
+async def render_debrief_card(debrief: dict, assets: AssetCache) -> io.BytesIO:
+    W, H = 1400, 720
+    members = debrief.get("members", [])[:4]
+    champ_imgs = await asyncio.gather(*[assets.get_champion_icon(m["record"].champion) for m in members])
+
+    canvas = _render_ascii_backdrop(W, H)
+    d = ImageDraw.Draw(canvas)
+
+    win = bool(debrief.get("win"))
+    res_txt = "SQUAD VICTORY" if win else "SQUAD DEFEAT"
+    res_col = (88, 240, 158, 255) if win else (255, 110, 118, 255)
+    mins, secs = divmod(debrief.get("duration_seconds", 0), 60)
+
+    _spaced_text(d, (58, 44), res_txt, _font(20, weight="Bold", mono=True), res_col, tracking=3.8)
+    d.text((58, 76), f"{len(members)}-Stack Post-Game Debrief", font=_font(44, weight="SemiBold"), fill=(246, 250, 255, 255))
+    _spaced_text(d, (60, 136), f"{debrief.get('queue_name', 'MATCH').upper()}  •  {mins}M {secs:02d}S", _font(16, weight="Regular", mono=True), (154, 180, 214, 235), tracking=2.2)
+
+    # Top-right MVP & Most Deaths badges
+    mvp = debrief.get("mvp", "")
+    md_name, md_cnt = debrief.get("most_deaths", ("", 0))
+    d.rounded_rectangle((W - 430, 56, W - 58, 102), radius=10, fill=(28, 24, 14, 215), outline=(218, 174, 76, 200), width=1)
+    d.text((W - 412, 79), f"MVP: {mvp}", font=_font(18, weight="Bold", mono=True), fill=(244, 204, 102, 255), anchor="lm")
+    d.rounded_rectangle((W - 430, 112, W - 58, 154), radius=10, fill=(36, 14, 22, 215), outline=(218, 86, 98, 180), width=1)
+    d.text((W - 412, 133), f"MOST DEATHS: {md_name} ({md_cnt}D)", font=_font(16, weight="SemiBold", mono=True), fill=(255, 136, 144, 255), anchor="lm")
+
+    # Evenly spaced member columns
+    n = max(1, len(members))
+    gap = 22
+    total_w = W - 116
+    card_w = (total_w - gap * (n - 1)) // n
+    card_h = 446
+    top_y = 194
+
+    for idx, m in enumerate(members):
+        r = m["record"]
+        is_mvp = m["display_name"] == mvp
+        cx0 = 58 + idx * (card_w + gap)
+        cx_mid = cx0 + card_w // 2
+
+        panel = Image.new("RGBA", (card_w, card_h), (0, 0, 0, 0))
+        pd = ImageDraw.Draw(panel)
+        outline = (232, 190, 88, 225) if is_mvp else (52, 76, 116, 185)
+        pd.rounded_rectangle((0, 0, card_w - 1, card_h - 1), radius=16, fill=(10, 18, 34, 212), outline=outline, width=2)
+        canvas.alpha_composite(panel, (cx0, top_y))
+
+        if is_mvp:
+            d.rounded_rectangle((cx_mid - 46, top_y + 14, cx_mid + 46, top_y + 38), radius=8, fill=(218, 174, 72, 235))
+            d.text((cx_mid, top_y + 26), "SQUAD MVP", font=_font(12, weight="Bold", mono=True), fill=(12, 16, 26, 255), anchor="mm")
+
+        r1, r2 = ((242, 198, 92), (92, 224, 255)) if is_mvp else ((86, 210, 255), (168, 116, 255))
+        _paste_circular_portrait(canvas, champ_imgs[idx], (cx_mid, top_y + 106), 104, r1, r2, 4, r.champion)
+
+        d.text((cx_mid, top_y + 172), m["display_name"][:14], font=_font(26, weight="SemiBold"), fill=(246, 250, 255, 255), anchor="mt")
+        d.text((cx_mid, top_y + 206), _display_champ_name(r.champion), font=_font(17, weight="Regular", mono=True), fill=(148, 184, 228, 240), anchor="mt")
+
+        d.text((cx_mid, top_y + 244), f"{r.kills} / {r.deaths} / {r.assists}", font=_font(32, weight="Bold"), fill=(252, 254, 255, 255), anchor="mt")
+        d.text((cx_mid, top_y + 286), f"{r.kda:.2f} KDA  •  {r.kill_participation:.0f}% KP", font=_font(16, weight="Regular", mono=True), fill=(154, 178, 210, 235), anchor="mt")
+
+        # Damage share bar
+        bx = cx0 + 24
+        bw = card_w - 48
+        by = top_y + 328
+        d.text((bx, by), "Damage Share", font=_font(14, weight="Regular", mono=True), fill=(154, 178, 210, 235))
+        d.text((bx + bw, by), f"{_fmt_k(r.damage_to_champions)} ({r.damage_share:.0f}%)", font=_font(14, weight="Bold", mono=True), fill=(242, 246, 255, 245), anchor="ra")
+        d.rounded_rectangle((bx, by + 24, bx + bw, by + 36), radius=6, fill=(24, 38, 64, 230))
+        fw = int(bw * min(1.0, r.damage_share / 45.0))
+        bar_c = (242, 198, 92, 255) if is_mvp else (92, 214, 255, 255)
+        if fw > 4:
+            d.rounded_rectangle((bx, by + 24, bx + fw, by + 36), radius=6, fill=bar_c)
+
+        d.text(
+            (cx_mid, top_y + 394),
+            f"{r.cs_per_min:.1f} CS/m  •  {r.vision_score} vis",
+            font=_font(16, weight="Medium", mono=True),
+            fill=(198, 214, 236, 240),
+            anchor="mt",
+        )
+
+    _draw_footer(canvas, "SQUAD DEBRIEF  •  JEFF BOT")
+    return _to_png_bytes(canvas)
+
+
+# -------------------------------------------------------------------------
+# 8. Champion Pool Tier Sheet Card (/pool)
+# -------------------------------------------------------------------------
+
+async def render_pool_card(ps, pool: dict, assets: AssetCache, days: int = 30) -> io.BytesIO:
+    W, H = 1400, 820
+    sections: list[tuple[str, tuple[int, int, int], list[dict]]] = []
+    if pool["climb"]:
+        sections.append(("CLIMB CHAMPS  (55%+ WR)", (86, 236, 146), pool["climb"][:4]))
+    if pool["solid"]:
+        sections.append(("SOLID PICKS  (45–54% WR)", (104, 198, 255), pool["solid"][:4]))
+    if pool["traps"]:
+        sections.append(("LP BLEED / TRAP CHAMPS  (<45% WR)", (255, 110, 118), pool["traps"][:4]))
+    if not sections and pool["one_offs"]:
+        sections.append(("RECENT PICKS  (1 GAME EACH)", (196, 152, 255), pool["one_offs"][:4]))
+
+    champ_names = [c["champion"] for _, _, items in sections for c in items]
+    fetched = await asyncio.gather(
+        assets.get_profile_icon(ps.profile_icon_id),
+        *[assets.get_champion_icon(cn) for cn in champ_names],
+    )
+    prof_img = fetched[0]
+    champ_img_map = dict(zip(champ_names, fetched[1:]))
+
+    canvas = _render_ascii_backdrop(W, H)
+    d = ImageDraw.Draw(canvas)
+
+    _paste_circular_portrait(canvas, prof_img, (116, 112), 112, (92, 224, 255), (186, 116, 255), 4, ps.display_name)
+    d.text((198, 66), f"{ps.display_name} — Champion Pool", font=_font(44, weight="SemiBold"), fill=(246, 250, 255, 255))
+    _spaced_text(
+        d,
+        (202, 128),
+        f"{pool['total_games']} GAMES  •  {pool['unique_champions']} CHAMPIONS  •  LAST {days} DAYS",
+        _font(16, weight="Regular", mono=True),
+        (154, 180, 214, 235),
+        tracking=2.2,
+    )
+
+    cur_y = 196
+    for title_txt, col, items in sections[:3]:
+        d.rounded_rectangle((58, cur_y + 3, 70, cur_y + 21), radius=3, fill=(*col, 255))
+        _spaced_text(d, (84, cur_y), title_txt, _font(17, weight="Bold", mono=True), (*col, 245), tracking=2.0)
+        d.line([(500, cur_y + 11), (W - 58, cur_y + 11)], fill=(52, 74, 110, 155), width=1)
+
+        tile_w, tile_h = 304, 108
+        for idx, c in enumerate(items[:4]):
+            tx = 58 + idx * (tile_w + 22)
+            ty = cur_y + 34
+            panel = Image.new("RGBA", (tile_w, tile_h), (0, 0, 0, 0))
+            pd = ImageDraw.Draw(panel)
+            pd.rounded_rectangle((0, 0, tile_w - 1, tile_h - 1), radius=14, fill=(10, 18, 34, 215), outline=(*col, 130), width=2)
+            canvas.alpha_composite(panel, (tx, ty))
+
+            _paste_circular_portrait(canvas, champ_img_map.get(c["champion"]), (tx + 52, ty + 54), 68, col, (112, 138, 224), 3, c["champion"])
+            d.text((tx + 98, ty + 14), _display_champ_name(c["champion"])[:13], font=_font(21, weight="SemiBold"), fill=(246, 250, 255, 255))
+            d.text((tx + 98, ty + 44), f"{c['wins']}W-{c['losses']}L  •  {c['wr']:.0f}% WR", font=_font(16, weight="Bold", mono=True), fill=(*col, 255))
+            d.text((tx + 98, ty + 70), f"{c['kda']:.2f} KDA  •  {c['cs_per_min']:.1f} CS/m", font=_font(14, weight="Regular", mono=True), fill=(154, 178, 210, 235))
+
+        cur_y += 164
+
+    # Bottom Role Breakdown strip
+    if pool.get("roles"):
+        ry = 696
+        d.text((58, ry), "ROLES:", font=_font(16, weight="Bold", mono=True), fill=(154, 180, 214, 235))
+        rx = 148
+        for r in pool["roles"][:5]:
+            r_col = (86, 236, 146) if r["wr"] >= 55 else ((104, 198, 255) if r["wr"] >= 45 else (255, 118, 124))
+            txt = f"{r['role']}: {r['wins']}W-{r['losses']}L ({r['wr']:.0f}%)"
+            tw = int(d.textlength(txt, font=_font(16, weight="SemiBold", mono=True))) + 28
+            d.rounded_rectangle((rx, ry - 6, rx + tw, ry + 26), radius=8, fill=(14, 26, 48, 220), outline=(*r_col, 170), width=1)
+            d.text((rx + 14, ry + 1), txt, font=_font(16, weight="SemiBold", mono=True), fill=(*r_col, 255))
+            rx += tw + 14
+
+    _draw_footer(canvas, "CHAMPION POOL AUDIT  •  JEFF BOT")
+    return _to_png_bytes(canvas)
+
+
+# -------------------------------------------------------------------------
+# 9. Wins vs. Losses Coaching Split Card (/coach)
+# -------------------------------------------------------------------------
+
+async def render_coach_card(ps, split: dict, assets: AssetCache, days: int = 14) -> io.BytesIO:
+    W, H = 1400, 760
+    prof_img, emb_img = await asyncio.gather(
+        assets.get_profile_icon(ps.profile_icon_id),
+        assets.get_rank_emblem(ps.solo_tier),
+    )
+
+    canvas = _render_ascii_backdrop(W, H)
+    d = ImageDraw.Draw(canvas)
+
+    _paste_circular_portrait(canvas, prof_img, (118, 116), 114, (92, 224, 255), (186, 116, 255), 4, ps.display_name)
+    d.text((202, 68), f"Coach Jeff — {ps.display_name}", font=_font(46, weight="SemiBold"), fill=(246, 250, 255, 255))
+    _spaced_text(
+        d,
+        (204, 130),
+        f"WINS VS LOSSES SPLIT  •  LAST {days} DAYS  •  {ps.wins}W-{ps.losses}L ({ps.win_rate:.0f}% WR)",
+        _font(16, weight="Regular", mono=True),
+        (154, 180, 214, 235),
+        tracking=2.0,
+    )
+    _paste_rank_emblem(canvas, emb_img, (W - 180, 48, 124, 124))
+
+    w = split.get("wins")
+    l = split.get("losses")
+
+    # Side headers
+    w_lbl = f"IN WINS ({w['games']}G)" if w else "IN WINS (0G)"
+    l_lbl = f"IN LOSSES ({l['games']}G)" if l else "IN LOSSES (0G)"
+    _spaced_text(d, (160, 206), w_lbl, _font(19, weight="Bold", mono=True), (88, 240, 158, 255), tracking=2.6)
+    d.text((W - 160, 206), l_lbl, font=_font(19, weight="Bold", mono=True), fill=(255, 114, 122, 255), anchor="ra")
+
+    def _val(bucket, key):
+        return bucket[key] if bucket else 0.0
+
+    # (label, win_fmt, loss_fmt, win_num, loss_num, lower_is_better)
+    rows = [
+        ("AVG DEATHS", f"{_val(w, 'avg_deaths'):.1f}", f"{_val(l, 'avg_deaths'):.1f}", _val(w, "avg_deaths"), _val(l, "avg_deaths"), True),
+        ("KDA RATIO", f"{_val(w, 'kda'):.2f}", f"{_val(l, 'kda'):.2f}", _val(w, "kda"), _val(l, "kda"), False),
+        ("CS / MIN", f"{_val(w, 'cs_per_min'):.1f}", f"{_val(l, 'cs_per_min'):.1f}", _val(w, "cs_per_min"), _val(l, "cs_per_min"), False),
+        ("KILL PART.", f"{_val(w, 'avg_kp'):.0f}%", f"{_val(l, 'avg_kp'):.0f}%", _val(w, "avg_kp"), _val(l, "avg_kp"), False),
+        ("DMG SHARE", f"{_val(w, 'avg_dmg_share'):.0f}%", f"{_val(l, 'avg_dmg_share'):.0f}%", _val(w, "avg_dmg_share"), _val(l, "avg_dmg_share"), False),
+        ("VISION / GAME", f"{_val(w, 'avg_vision'):.1f}", f"{_val(l, 'avg_vision'):.1f}", _val(w, "avg_vision"), _val(l, "avg_vision"), False),
+        ("CONTROL WARDS", f"{_val(w, 'avg_control_wards'):.1f}", f"{_val(l, 'avg_control_wards'):.1f}", _val(w, "avg_control_wards"), _val(l, "avg_control_wards"), False),
+    ]
+
+    cx = W // 2
+    max_bar = 350
+    for idx, (lbl, wf, lf, wn, ln, _) in enumerate(rows):
+        ry = 258 + idx * 62
+        total = max(0.001, wn + ln)
+        bw_w = int(max_bar * (wn / total)) if (wn + ln) > 0 else 0
+        bw_l = int(max_bar * (ln / total)) if (wn + ln) > 0 else 0
+
+        d.text((cx, ry + 14), lbl, font=_font(16, weight="Bold", mono=True), fill=(184, 204, 232, 245), anchor="mm")
+
+        l_end = cx - 98
+        d.rounded_rectangle((l_end - max_bar, ry + 6, l_end, ry + 22), radius=6, fill=(20, 32, 54, 220))
+        if bw_w > 4:
+            d.rounded_rectangle((l_end - bw_w, ry + 6, l_end, ry + 22), radius=6, fill=(78, 228, 152, 245))
+        d.text((l_end - max_bar - 22, ry + 14), wf if w else "—", font=_font(24, weight="Bold", mono=True), fill=(116, 242, 174, 255), anchor="rm")
+
+        r_start = cx + 98
+        d.rounded_rectangle((r_start, ry + 6, r_start + max_bar, ry + 22), radius=6, fill=(20, 32, 54, 220))
+        if bw_l > 4:
+            d.rounded_rectangle((r_start, ry + 6, r_start + bw_l, ry + 22), radius=6, fill=(246, 102, 116, 245))
+        d.text((r_start + max_bar + 22, ry + 14), lf if l else "—", font=_font(24, weight="Bold", mono=True), fill=(255, 132, 142, 255), anchor="lm")
+
+    _draw_footer(canvas, "WINS VS LOSSES COACHING  •  JEFF BOT")
+    return _to_png_bytes(canvas)
+
+
+# -------------------------------------------------------------------------
+# 10. Squad & Duo Synergy Chemistry Card (/synergy)
+# -------------------------------------------------------------------------
+
+async def render_synergy_card(synergy: dict, assets: AssetCache) -> io.BytesIO:
+    W, H = 1400, 788
+    icon_ids: dict[str, int] = synergy.get("profile_icons") or {}
+    names = list(icon_ids.keys())
+    fetched_icons = await asyncio.gather(*[assets.get_profile_icon(icon_ids[n]) for n in names]) if names else []
+    icon_map = dict(zip(names, fetched_icons))
+
+    canvas = _render_ascii_backdrop(W, H)
+    d = ImageDraw.Draw(canvas)
+
+    days = synergy.get("days", 7)
+    d.text((58, 44), "Squad Synergy", font=_font(48, weight="SemiBold"), fill=(246, 250, 255, 255))
+    _spaced_text(d, (62, 108), f"TOGETHER VS SOLO CHEMISTRY  •  LAST {days} DAYS", _font(16, weight="Regular", mono=True), (154, 180, 214, 235), tracking=2.2)
+
+    # Top-right stack size pills
+    stacks = synergy.get("stacks", {})
+    sx = W - 58
+    for size in sorted(stacks.keys(), reverse=True):
+        w, l = stacks[size]
+        if w + l == 0:
+            continue
+        txt = f"{size}-STACK: {w}W-{l}L ({w / (w + l) * 100:.0f}%)"
+        tw = int(d.textlength(txt, font=_font(15, weight="Bold", mono=True))) + 24
+        d.rounded_rectangle((sx - tw, 62, sx, 96), radius=8, fill=(18, 28, 52, 220), outline=(146, 118, 255, 180), width=1)
+        d.text((sx - tw // 2, 79), txt, font=_font(15, weight="Bold", mono=True), fill=(214, 192, 255, 255), anchor="mm")
+        sx -= tw + 12
+
+    # Two summary tiles: Together vs Solo
+    def _draw_summary(x0: int, label: str, wins: int, losses: int, wr: float, accent: tuple):
+        tw, th = 626, 134
+        panel = Image.new("RGBA", (tw, th), (0, 0, 0, 0))
+        pd = ImageDraw.Draw(panel)
+        pd.rounded_rectangle((0, 0, tw - 1, th - 1), radius=16, fill=(10, 18, 34, 212), outline=(*accent, 165), width=2)
+        canvas.alpha_composite(panel, (x0, 162))
+
+        _spaced_text(d, (x0 + 26, 180), label, _font(16, weight="Bold", mono=True), (*accent, 245), tracking=2.4)
+        g = wins + losses
+        d.text((x0 + 26, 212), f"{wr:.0f}% WR" if g else "—", font=_font(40, weight="Bold"), fill=(250, 252, 255, 255))
+        d.text((x0 + tw - 26, 224), f"{wins}W / {losses}L  ({g} games)", font=_font(20, weight="SemiBold", mono=True), fill=(182, 202, 228, 240), anchor="ra")
+
+        bx, by, bw = x0 + 26, 272, tw - 52
+        d.rounded_rectangle((bx, by, bx + bw, by + 10), radius=5, fill=(24, 38, 64, 230))
+        if g and wr > 0:
+            d.rounded_rectangle((bx, by, bx + max(8, int(bw * wr / 100.0)), by + 10), radius=5, fill=(*accent, 255))
+
+    _draw_summary(58, "PLAYING TOGETHER", synergy.get("together_wins", 0), synergy.get("together_losses", 0), synergy.get("together_wr", 0.0), (88, 226, 255))
+    _draw_summary(716, "PLAYING SOLO", synergy.get("solo_wins", 0), synergy.get("solo_losses", 0), synergy.get("solo_wr", 0.0), (176, 132, 255))
+
+    # Duo chemistry grid (up to 6 pairs in 2x3)
+    _draw_icon(canvas, "star", (58, 330), 22, (206, 144, 255))
+    d.text((92, 328), "Duo Pair Records", font=_font(21, weight="Regular", mono=True), fill=(214, 224, 240, 245))
+    d.line([(314, 341), (W - 58, 341)], fill=(54, 78, 118, 170), width=1)
+
+    duos = synergy.get("duos", [])[:6]
+    if duos:
+        dw, dh = 626, 108
+        for idx, duo in enumerate(duos):
+            col_i = idx % 2
+            row_i = idx // 2
+            dx = 58 + col_i * 658
+            dy = 374 + row_i * 122
+
+            panel = Image.new("RGBA", (dw, dh), (0, 0, 0, 0))
+            pd = ImageDraw.Draw(panel)
+            wr = duo["wr"]
+            col = (86, 236, 146) if wr >= 55 else ((104, 198, 255) if wr >= 45 else (255, 114, 122))
+            pd.rounded_rectangle((0, 0, dw - 1, dh - 1), radius=14, fill=(10, 18, 34, 212), outline=(*col, 135), width=2)
+            canvas.alpha_composite(panel, (dx, dy))
+
+            pair_names = [p.strip() for p in duo["pair"].split("+")]
+            p1 = pair_names[0] if pair_names else "?"
+            p2 = pair_names[1] if len(pair_names) > 1 else "?"
+            _paste_circular_portrait(canvas, icon_map.get(p1), (dx + 46, dy + 54), 60, (92, 224, 255), (146, 118, 255), 3, p1)
+            _paste_circular_portrait(canvas, icon_map.get(p2), (dx + 94, dy + 54), 60, (186, 116, 255), (255, 114, 152), 3, p2)
+
+            d.text((dx + 144, dy + 20), duo["pair"], font=_font(22, weight="SemiBold"), fill=(246, 250, 255, 255))
+            d.text((dx + dw - 24, dy + 22), f"{wr:.0f}%", font=_font(26, weight="Bold", mono=True), fill=(*col, 255), anchor="ra")
+            d.text((dx + 144, dy + 54), f"{duo['wins']}W / {duo['losses']}L  ({duo['games']} games)", font=_font(15, weight="Regular", mono=True), fill=(154, 178, 210, 235))
+
+            bx, by, bw = dx + 144, dy + 82, dw - 168
+            d.rounded_rectangle((bx, by, bx + bw, by + 8), radius=4, fill=(24, 38, 64, 230))
+            if wr > 0:
+                d.rounded_rectangle((bx, by, bx + max(6, int(bw * wr / 100.0)), by + 8), radius=4, fill=(*col, 255))
+    else:
+        d.text((W // 2, 520), "No duo or squad games found in this window.", font=_font(22), fill=(146, 168, 198, 220), anchor="mm")
+
+    _draw_footer(canvas, "SQUAD CHEMISTRY  •  JEFF BOT")
+    return _to_png_bytes(canvas)
+
+
+# -------------------------------------------------------------------------
+# 11. Top 10 Champion Mastery Gallery Card (/mastery)
+# -------------------------------------------------------------------------
+
+async def render_mastery_card(mastery: dict, assets: AssetCache) -> io.BytesIO:
+    W, H = 1400, 820
+    items = mastery.get("masteries", [])[:10]
+    fetched = await asyncio.gather(
+        assets.get_profile_icon(mastery.get("profile_icon_id", 0)),
+        *[assets.get_champion_icon(m["name"]) for m in items],
+    )
+    prof_img = fetched[0]
+    champ_imgs = fetched[1:]
+
+    canvas = _render_ascii_backdrop(W, H)
+    d = ImageDraw.Draw(canvas)
+
+    _paste_circular_portrait(canvas, prof_img, (116, 112), 112, (236, 192, 92), (92, 224, 255), 4, mastery["display_name"])
+    d.text((198, 66), f"{mastery['display_name']}'s Top Champions", font=_font(44, weight="SemiBold"), fill=(246, 250, 255, 255))
+    ver = mastery.get("version") or "LIVE"
+    _spaced_text(d, (202, 128), f"CHAMPION MASTERY GALLERY  •  PATCH {ver}", _font(16, weight="Regular", mono=True), (154, 180, 214, 235), tracking=2.2)
+
+    if items:
+        # #1 Main spotlight banner
+        top = items[0]
+        sp = Image.new("RGBA", (W - 116, 162), (0, 0, 0, 0))
+        spd = ImageDraw.Draw(sp)
+        spd.rounded_rectangle((0, 0, W - 117, 161), radius=16, fill=(14, 22, 38, 218), outline=(236, 192, 92, 210), width=2)
+        canvas.alpha_composite(sp, (58, 194))
+
+        _paste_circular_portrait(canvas, champ_imgs[0], (148, 275), 116, (244, 204, 96), (92, 224, 255), 4, top["name"])
+        _spaced_text(d, (236, 218), "#1 SIGNATURE MAIN", _font(15, weight="Bold", mono=True), (242, 200, 96, 255), tracking=2.6)
+        d.text((234, 246), _display_champ_name(top["name"]), font=_font(44, weight="Bold"), fill=(250, 252, 255, 255))
+        d.text((236, 304), f"Mastery Level {top['level']}", font=_font(20, weight="Regular", mono=True), fill=(176, 198, 226, 240))
+        d.text((W - 92, 256), f"{top['points']:,}", font=_font(48, weight="Bold", mono=True), fill=(244, 204, 102, 255), anchor="ra")
+        d.text((W - 92, 314), "MASTERY POINTS", font=_font(14, weight="Regular", mono=True), fill=(154, 178, 210, 235), anchor="ra")
+
+        # Remaining #2..#10 in 3x3 grid
+        tw, th = 414, 106
+        for idx, m in enumerate(items[1:10], start=2):
+            grid_i = idx - 2
+            col_i = grid_i % 3
+            row_i = grid_i // 3
+            tx = 58 + col_i * (tw + 21)
+            ty = 384 + row_i * (th + 18)
+
+            tile = Image.new("RGBA", (tw, th), (0, 0, 0, 0))
+            td = ImageDraw.Draw(tile)
+            td.rounded_rectangle((0, 0, tw - 1, th - 1), radius=14, fill=(10, 18, 34, 212), outline=(52, 76, 116, 180), width=2)
+            canvas.alpha_composite(tile, (tx, ty))
+
+            _paste_circular_portrait(canvas, champ_imgs[idx - 1], (tx + 52, ty + 53), 66, (92, 214, 255), (176, 116, 255), 3, m["name"])
+            d.text((tx + 98, ty + 18), f"#{idx}  {_display_champ_name(m['name'])[:14]}", font=_font(21, weight="SemiBold"), fill=(246, 250, 255, 255))
+            d.text((tx + 98, ty + 50), f"Level {m['level']}  •  {m['points']:,} pts", font=_font(16, weight="Regular", mono=True), fill=(154, 184, 220, 240))
+    else:
+        d.text((W // 2, 460), "No mastery data available.", font=_font(24), fill=(146, 168, 198, 220), anchor="mm")
+
+    _draw_footer(canvas, "CHAMPION MASTERY  •  JEFF BOT")
+    return _to_png_bytes(canvas)
+
+
+# -------------------------------------------------------------------------
+# 12. Weekly Damage Leaderboard Card (/damage)
+# -------------------------------------------------------------------------
+
+async def render_damage_card(stats: list, assets: AssetCache) -> io.BytesIO:
+    W, H = 1400, 760
+    active = sorted([p for p in stats if p.games_played > 0 and not p.error], key=lambda p: p.total_damage_to_champions, reverse=True)
+    inactive = [p for p in stats if p not in active]
+    ordered = (active + inactive)[:5]
+
+    icons = await asyncio.gather(*[assets.get_profile_icon(p.profile_icon_id) for p in ordered])
+
+    canvas = _render_ascii_backdrop(W, H)
+    d = ImageDraw.Draw(canvas)
+
+    group_total = sum(p.total_damage_to_champions for p in active)
+    d.text((58, 46), "Weekly Damage Leaderboard", font=_font(46, weight="SemiBold"), fill=(246, 250, 255, 255))
+    _spaced_text(d, (62, 108), "TOTAL DAMAGE TO CHAMPIONS  •  LAST 7 DAYS", _font(16, weight="Regular", mono=True), (154, 180, 214, 235), tracking=2.2)
+
+    d.text((W - 58, 52), f"{group_total:,}", font=_font(42, weight="Bold", mono=True), fill=(255, 134, 114, 255), anchor="ra")
+    d.text((W - 58, 104), "SQUAD TOTAL DAMAGE", font=_font(14, weight="Regular", mono=True), fill=(154, 178, 210, 235), anchor="ra")
+
+    max_dmg = max((p.total_damage_to_champions for p in active), default=1)
+    rank_colors = [
+        (244, 202, 92),   # #1 Gold
+        (196, 212, 232),  # #2 Silver
+        (214, 146, 94),   # #3 Bronze
+        (134, 162, 202),  # #4
+        (114, 138, 176),
+    ]
+
+    for idx, ps in enumerate(ordered):
+        ry = 178 + idx * 106
+        rc = rank_colors[min(idx, len(rank_colors) - 1)]
+        panel = Image.new("RGBA", (W - 116, 92), (0, 0, 0, 0))
+        pd = ImageDraw.Draw(panel)
+        pd.rounded_rectangle((0, 0, W - 117, 91), radius=14, fill=(10, 18, 34, 212), outline=(*rc, 170 if idx == 0 else 105), width=2)
+        canvas.alpha_composite(panel, (58, ry))
+
+        d.text((92, ry + 46), f"#{idx + 1}", font=_font(28, weight="Bold", mono=True), fill=(*rc, 255), anchor="mm")
+        _paste_circular_portrait(canvas, icons[idx], (164, ry + 46), 64, rc, (255, 102, 114), 3, ps.display_name)
+
+        d.text((216, ry + 14), ps.display_name, font=_font(24, weight="SemiBold"), fill=(246, 250, 255, 255))
+        if ps.games_played > 0 and not ps.error:
+            d.text(
+                (216, ry + 46),
+                f"{ps.games_played} games  •  {_fmt_k(ps.avg_damage_per_game)} / game",
+                font=_font(15, weight="Regular", mono=True),
+                fill=(154, 178, 210, 235),
+            )
+            d.text((W - 84, ry + 18), f"{ps.total_damage_to_champions:,}", font=_font(28, weight="Bold", mono=True), fill=(252, 254, 255, 255), anchor="ra")
+
+            # Neon damage bar
+            bx, by, bw = 510, ry + 54, W - 600
+            d.rounded_rectangle((bx, by, bx + bw, by + 14), radius=7, fill=(24, 38, 64, 230))
+            fw = max(12, int(bw * (ps.total_damage_to_champions / max(1, max_dmg))))
+            bar_c = (255, 112, 92, 255) if idx == 0 else (228, 96, 128, 235)
+            d.rounded_rectangle((bx, by, bx + fw, by + 14), radius=7, fill=bar_c)
+        else:
+            msg = "No games this week" if not ps.error else "Lookup error"
+            d.text((216, ry + 48), msg, font=_font(16, weight="Regular", mono=True), fill=(134, 156, 188, 215))
+
+    _draw_footer(canvas, "DAMAGE LEADERBOARD  •  JEFF BOT")
+    return _to_png_bytes(canvas)
+
+
+# -------------------------------------------------------------------------
+# 13. Rank Promotion & Demotion Ceremony Card
+# -------------------------------------------------------------------------
+
+async def render_rank_change_card(event: dict, assets: AssetCache) -> io.BytesIO:
+    W, H = 1400, 620
+    is_promo = event.get("direction", "promotion") == "promotion"
+    prof_img, old_emb, new_emb = await asyncio.gather(
+        assets.get_profile_icon(event.get("profile_icon_id", 0)),
+        assets.get_rank_emblem(event.get("old_tier", "UNRANKED")),
+        assets.get_rank_emblem(event.get("new_tier", "UNRANKED")),
+    )
+
+    canvas = _render_ascii_backdrop(W, H)
+    d = ImageDraw.Draw(canvas)
+
+    # Radiant halo behind new rank emblem
+    halo = Image.new("RGBA", (W, H), (0, 0, 0, 0))
+    hd = ImageDraw.Draw(halo)
+    c1, c2 = TIER_ACCENTS.get((event.get("new_tier") or "UNRANKED").upper(), TIER_ACCENTS["UNRANKED"])
+    halo_col = (*c1, 95) if is_promo else (238, 72, 86, 85)
+    hd.ellipse((780, 170, 1180, 550), fill=halo_col)
+    halo = halo.filter(ImageFilter.GaussianBlur(radius=48))
+    canvas = Image.alpha_composite(canvas, halo)
+    d = ImageDraw.Draw(canvas)
+
+    _paste_circular_portrait(
+        canvas,
+        prof_img,
+        (124, 118),
+        118,
+        (244, 204, 96) if is_promo else (255, 98, 114),
+        c1,
+        4,
+        event["display_name"],
+    )
+
+    tag = "TIER PROMOTION" if is_promo else "TIER DEMOTION"
+    tag_col = (244, 204, 96, 255) if is_promo else (255, 110, 118, 255)
+    _spaced_text(d, (212, 66), tag, _font(19, weight="Bold", mono=True), tag_col, tracking=3.8)
+    verb = "Promoted!" if is_promo else "Demoted..."
+    d.text((210, 96), f"{event['display_name']} {verb}", font=_font(50, weight="Bold"), fill=(248, 250, 255, 255))
+
+    # Old Emblem -> Arrow -> New Emblem
+    _paste_rank_emblem(canvas, old_emb, (240, 240, 180, 180))
+    old_txt = f"{event['old_tier'].capitalize()} {event.get('old_rank', '')}".strip()
+    d.text((330, 444), old_txt, font=_font(26, weight="SemiBold"), fill=(164, 184, 212, 235), anchor="mt")
+    d.text((330, 478), f"{event.get('old_lp', 0)} LP", font=_font(18, weight="Regular", mono=True), fill=(132, 154, 186, 220), anchor="mt")
+
+    d.text((640, 336), "→", font=_font(82, weight="Bold"), fill=tag_col, anchor="mm")
+
+    _paste_rank_emblem(canvas, new_emb, (855, 204, 246, 246))
+    new_txt = f"{event['new_tier'].capitalize()} {event.get('new_rank', '')}".strip()
+    d.text((978, 456), new_txt, font=_font(34, weight="Bold"), fill=(252, 254, 255, 255), anchor="mt")
+    d.text((978, 500), f"{event.get('new_lp', 0)} LP", font=_font(20, weight="SemiBold", mono=True), fill=(*c1, 255), anchor="mt")
+
+    _draw_footer(canvas, "RANK TRACKER  •  JEFF BOT")
+    return _to_png_bytes(canvas)
+
+
+# -------------------------------------------------------------------------
+# 14. Weekly Coaching Goal HUD Card (/goal)
+# -------------------------------------------------------------------------
+
+async def render_goal_card(
+    display_name: str,
+    profile_icon_id: int,
+    eval_result: dict,
+    assets: AssetCache,
+    is_new: bool = False,
+) -> io.BytesIO:
+    W, H = 1400, 560
+    prof_img = await assets.get_profile_icon(profile_icon_id)
+
+    canvas = _render_ascii_backdrop(W, H)
+    d = ImageDraw.Draw(canvas)
+
+    goal = eval_result["goal"]
+    met = bool(eval_result["met"])
+    games = eval_result["games"]
+
+    pill_txt, pill_bg, pill_fg = (
+        ("NEW GOAL SET", (72, 54, 18, 225), (244, 204, 96, 255))
+        if is_new
+        else (
+            ("ON TRACK", (18, 92, 58, 225), (92, 242, 160, 255))
+            if met
+            else ("KEEP GRINDING", (20, 58, 108, 225), (112, 210, 255, 255))
+        )
+    )
+
+    _paste_circular_portrait(canvas, prof_img, (118, 114), 112, (92, 224, 255), (236, 192, 92), 4, display_name)
+    _spaced_text(d, (202, 64), "WEEKLY COACHING GOAL", _font(16, weight="Bold", mono=True), (154, 180, 214, 235), tracking=2.8)
+    d.text((200, 92), display_name, font=_font(48, weight="SemiBold"), fill=(246, 250, 255, 255))
+
+    d.rounded_rectangle((W - 280, 82, W - 58, 128), radius=10, fill=pill_bg, outline=pill_fg, width=2)
+    d.text((W - 169, 105), pill_txt, font=_font(17, weight="Bold", mono=True), fill=pill_fg, anchor="mm")
+
+    # Main goal glass panel
+    panel = Image.new("RGBA", (W - 116, 266), (0, 0, 0, 0))
+    pd = ImageDraw.Draw(panel)
+    pd.rounded_rectangle((0, 0, W - 117, 265), radius=16, fill=(10, 18, 34, 214), outline=(56, 82, 124, 190), width=2)
+    canvas.alpha_composite(panel, (58, 206))
+
+    d.text((94, 236), goal["description"][:72], font=_font(26, weight="SemiBold"), fill=(246, 250, 255, 255))
+
+    # Progress bar from baseline -> target
+    base_v = float(eval_result["baseline"])
+    targ_v = float(eval_result["target"])
+    curr_v = float(eval_result["current"]) if games else base_v
+    if eval_result["op"] == "<=":
+        denom = max(0.01, base_v - targ_v)
+        pct = max(0.0, min(1.0, (base_v - curr_v) / denom))
+    else:
+        denom = max(0.01, targ_v - base_v)
+        pct = max(0.0, min(1.0, (curr_v - base_v) / denom))
+
+    bx, by, bw = 94, 304, W - 188
+    d.rounded_rectangle((bx, by, bx + bw, by + 20), radius=10, fill=(24, 38, 64, 235))
+    fill_c = (86, 238, 152, 255) if met else (96, 204, 255, 255)
+    if pct > 0.02:
+        d.rounded_rectangle((bx, by, bx + max(18, int(bw * pct)), by + 20), radius=10, fill=fill_c)
+
+    unit = eval_result["unit"]
+    cols = [
+        ("BASELINE", f"{base_v:.1f} {unit}", (172, 194, 224, 240)),
+        (f"CURRENT ({games}G)", f"{curr_v:.1f} {unit}" if games else "0 games yet", fill_c),
+        ("TARGET", f"{eval_result['op']} {targ_v:.1f} {unit}", (244, 204, 96, 255)),
+    ]
+    for i, (lbl, val, col) in enumerate(cols):
+        cx = 94 + i * 410
+        d.text((cx, 356), lbl, font=_font(15, weight="Bold", mono=True), fill=(148, 172, 204, 235))
+        d.text((cx, 384), val, font=_font(32, weight="Bold", mono=True), fill=col)
+
+    _draw_footer(canvas, "WEEKLY GOAL TRACKER  •  JEFF BOT")
+    return _to_png_bytes(canvas)

@@ -17,9 +17,18 @@ from ai import DeepSeekClient
 from cards import (
     AssetCache,
     render_build_card,
+    render_coach_card,
+    render_damage_card,
+    render_debrief_card,
+    render_goal_card,
+    render_mastery_card,
     render_match_card,
     render_player_card,
+    render_pool_card,
+    render_rank_change_card,
+    render_scout_card,
     render_squad_card,
+    render_synergy_card,
     render_versus_card,
 )
 from coaching import (
@@ -234,14 +243,15 @@ async def check_rank_changes() -> None:
             logger.warning(f"Detected {len(events)} rank change(s), but CHANNEL_ID is unavailable.")
             return
         for event in events:
-            commentary = (
-                await deepseek.comment_rank_change(event) if deepseek.is_configured else None
+            commentary, card_buf = await asyncio.gather(
+                deepseek.comment_rank_change(event) if deepseek.is_configured else asyncio.sleep(0, result=None),
+                render_rank_change_card(event, assets),
             )
-            if event.get("direction") == "demotion":
-                embed = build_demotion_embed(event, commentary=commentary)
-            else:
-                embed = build_promotion_embed(event, commentary=commentary)
-            await channel.send(embed=embed)
+            content = f"🧠 **Jeff Says:** {commentary}" if commentary else None
+            await channel.send(
+                content=content,
+                file=discord.File(card_buf, filename=f"{event['display_name']}_rank.png"),
+            )
         logger.info(f"Posted {len(events)} rank change alert(s).")
     except Exception as e:
         logger.exception(f"Rank change check failed: {e}")
@@ -256,10 +266,15 @@ async def check_squad_debriefs() -> None:
     try:
         debriefs = await aggregator.find_squad_games(only_unannounced=True, lookback_per_player=3)
         for debrief in debriefs:
-            commentary = (
-                await deepseek.debrief_squad_game(debrief) if deepseek.is_configured else None
+            commentary, card_buf = await asyncio.gather(
+                deepseek.debrief_squad_game(debrief) if deepseek.is_configured else asyncio.sleep(0, result=None),
+                render_debrief_card(debrief, assets),
             )
-            await channel.send(embed=build_squad_debrief_embed(debrief, commentary=commentary))
+            content = f"🧠 **Jeff's Squad Debrief:** {commentary}" if commentary else None
+            await channel.send(
+                content=content,
+                file=discord.File(card_buf, filename=f"squad_debrief_{debrief['match_id']}.png"),
+            )
             db.mark_match_announced(debrief["match_id"])
             logger.info(f"Posted auto squad debrief for {debrief['match_id']}.")
     except Exception as e:
@@ -778,8 +793,21 @@ async def slash_coach(
             return
         split = compute_win_loss_split(ps)
         pool = compute_champion_pool_audit(ps)
-        advice = await deepseek.coach_player(ps, split, pool) if deepseek.is_configured else None
-        await interaction.followup.send(embed=build_coach_embed(ps, split, advice, days=days))
+        advice, card_buf = await asyncio.gather(
+            deepseek.coach_player(ps, split, pool) if deepseek.is_configured else asyncio.sleep(0, result=None),
+            render_coach_card(ps, split, assets, days=days),
+        )
+        file = discord.File(card_buf, filename=f"{ps.display_name}_coach.png")
+        if advice:
+            tip_embed = discord.Embed(
+                title=f"🧠 Coach Jeff's Takeaways — {ps.display_name}",
+                description=advice[:4096],
+                color=0x0BC4E3,
+            )
+            tip_embed.set_footer(text="Powered by DeepSeek • Use /pool for champ audit or /goal for a weekly target")
+            await interaction.followup.send(file=file, embed=tip_embed)
+        else:
+            await interaction.followup.send(file=file)
     except Exception as e:
         await interaction.followup.send(f"❌ Coaching lookup failed: {e}")
 
@@ -810,8 +838,15 @@ async def slash_pool(
             await interaction.followup.send(f"🎯 `{ps.display_name}` has 0 games in the last {days} days.")
             return
         pool = compute_champion_pool_audit(ps)
-        verdict = await deepseek.audit_pool_verdict(ps, pool) if deepseek.is_configured else None
-        await interaction.followup.send(embed=build_pool_embed(ps, pool, verdict, days=days))
+        verdict, card_buf = await asyncio.gather(
+            deepseek.audit_pool_verdict(ps, pool) if deepseek.is_configured else asyncio.sleep(0, result=None),
+            render_pool_card(ps, pool, assets, days=days),
+        )
+        content = f"🧠 **Coach Jeff's Verdict:** {verdict}" if verdict else None
+        await interaction.followup.send(
+            content=content,
+            file=discord.File(card_buf, filename=f"{ps.display_name}_pool.png"),
+        )
     except Exception as e:
         await interaction.followup.send(f"❌ Pool audit failed: {e}")
 
@@ -854,7 +889,12 @@ async def slash_goal(
         # Measure progress using matches played since the goal was created
         progress_ps = await aggregator._fetch_player_stats(resolved, int(active["created_at"]))
         ev = evaluate_goal_progress(active, progress_ps)
-        await interaction.followup.send(embed=build_goal_embed(ps_14.display_name, ev, is_new=is_new))
+        card_buf = await render_goal_card(
+            ps_14.display_name, ps_14.profile_icon_id, ev, assets, is_new=is_new
+        )
+        await interaction.followup.send(
+            file=discord.File(card_buf, filename=f"{ps_14.display_name}_goal.png")
+        )
     except Exception as e:
         await interaction.followup.send(f"❌ Goal check failed: {e}")
 
@@ -871,12 +911,24 @@ async def slash_scout(interaction: discord.Interaction, player: str):
     await interaction.response.defer()
     try:
         scout = await aggregator.get_live_scout_data(resolved)
-        gameplan = (
-            await deepseek.scout_live_game(scout)
-            if deepseek.is_configured and scout.get("in_game") and not scout.get("error")
-            else None
+        if scout.get("error") or not scout.get("in_game"):
+            await interaction.followup.send(embed=build_scout_embed(scout, None))
+            return
+        gameplan, card_buf = await asyncio.gather(
+            deepseek.scout_live_game(scout) if deepseek.is_configured else asyncio.sleep(0, result=None),
+            render_scout_card(scout, assets),
         )
-        await interaction.followup.send(embed=build_scout_embed(scout, gameplan))
+        file = discord.File(card_buf, filename=f"{scout['display_name']}_scout.png")
+        if gameplan:
+            gp_embed = discord.Embed(
+                title=f"🧠 Loading-Screen Gameplan — {scout['display_name']}",
+                description=gameplan[:4096],
+                color=0x9B59B6,
+            )
+            gp_embed.set_footer(text="Powered by DeepSeek • Run /build for full item path card")
+            await interaction.followup.send(file=file, embed=gp_embed)
+        else:
+            await interaction.followup.send(file=file)
     except Exception as e:
         await interaction.followup.send(f"❌ Scout failed: {e}")
 
@@ -890,10 +942,15 @@ async def slash_debrief(interaction: discord.Interaction):
             await interaction.followup.send("*No recent games found with 2+ squadmates on the same team.*")
             return
         latest = debriefs[-1]
-        commentary = (
-            await deepseek.debrief_squad_game(latest) if deepseek.is_configured else None
+        commentary, card_buf = await asyncio.gather(
+            deepseek.debrief_squad_game(latest) if deepseek.is_configured else asyncio.sleep(0, result=None),
+            render_debrief_card(latest, assets),
         )
-        await interaction.followup.send(embed=build_squad_debrief_embed(latest, commentary=commentary))
+        content = f"🧠 **Jeff's Squad Debrief:** {commentary}" if commentary else None
+        await interaction.followup.send(
+            content=content,
+            file=discord.File(card_buf, filename=f"squad_debrief_{latest['match_id']}.png"),
+        )
     except Exception as e:
         await interaction.followup.send(f"❌ Squad debrief failed: {e}")
 
@@ -1011,7 +1068,8 @@ async def slash_damage(interaction: discord.Interaction):
     await interaction.response.defer()
     try:
         stats = await aggregator.get_weekly_stats()
-        await interaction.followup.send(embed=build_damage_embed(stats))
+        card_buf = await render_damage_card(stats, assets)
+        await interaction.followup.send(file=discord.File(card_buf, filename="weekly_damage.png"))
     except Exception as e:
         await interaction.followup.send(f"❌ Could not fetch damage stats: {e}")
 
@@ -1024,7 +1082,8 @@ async def slash_synergy(
     await interaction.response.defer()
     try:
         data = await aggregator.get_synergy_stats(days=days)
-        await interaction.followup.send(embed=build_synergy_embed(data))
+        card_buf = await render_synergy_card(data, assets)
+        await interaction.followup.send(file=discord.File(card_buf, filename="squad_synergy.png"))
     except Exception as e:
         await interaction.followup.send(f"❌ Could not compute synergy: {e}")
 
@@ -1051,7 +1110,13 @@ async def slash_mastery(interaction: discord.Interaction, player: str):
     await interaction.response.defer()
     try:
         data = await aggregator.get_champion_mastery(resolved, count=10)
-        await interaction.followup.send(embed=build_mastery_embed(data))
+        if data.get("error"):
+            await interaction.followup.send(embed=build_mastery_embed(data))
+            return
+        card_buf = await render_mastery_card(data, assets)
+        await interaction.followup.send(
+            file=discord.File(card_buf, filename=f"{data['display_name']}_mastery.png")
+        )
     except Exception as e:
         await interaction.followup.send(f"❌ Could not fetch mastery for `{resolved}`: {e}")
 
