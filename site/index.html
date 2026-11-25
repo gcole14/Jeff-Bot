@@ -1,0 +1,267 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Jeff Bot — League of Legends Discord Stats &amp; AI Coach</title>
+  <meta name="description" content="Private Discord bot for tracking League of Legends stats, timeline VOD reviews, squad synergy, and AI coaching." />
+  <style>
+    :root {
+      --bg: #0a1019;
+      --surface: #111a28;
+      --surface-2: #162235;
+      --border: #24344d;
+      --gold: #c89b3c;
+      --gold-bright: #f0e6d2;
+      --blue: #0bc4e3;
+      --text: #e6ecf5;
+      --muted: #93a4bc;
+    }
+
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Inter, sans-serif;
+      background:
+        radial-gradient(900px 450px at 50% -120px, rgba(11, 196, 227, 0.14), transparent 70%),
+        radial-gradient(700px 380px at 85% 10%, rgba(200, 155, 60, 0.12), transparent 65%),
+        var(--bg);
+      color: var(--text);
+      line-height: 1.6;
+      min-height: 100vh;
+    }
+
+    .container {
+      max-width: 920px;
+      margin: 0 auto;
+      padding: 64px 24px 48px;
+    }
+
+    .badge {
+      display: inline-block;
+      font-size: 12px;
+      font-weight: 600;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      color: var(--gold);
+      border: 1px solid rgba(200, 155, 60, 0.4);
+      background: rgba(200, 155, 60, 0.1);
+      padding: 5px 12px;
+      border-radius: 999px;
+      margin-bottom: 18px;
+    }
+
+    h1 {
+      font-size: clamp(2rem, 5vw, 3.1rem);
+      font-weight: 800;
+      letter-spacing: -0.02em;
+      color: var(--gold-bright);
+      margin-bottom: 14px;
+    }
+
+    .subtitle {
+      font-size: 1.1rem;
+      color: var(--muted);
+      max-width: 640px;
+      margin-bottom: 28px;
+    }
+
+    .cta-row {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 12px;
+      margin-bottom: 52px;
+    }
+
+    .btn {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      padding: 13px 22px;
+      border-radius: 10px;
+      font-weight: 600;
+      font-size: 0.98rem;
+      text-decoration: none;
+      transition: transform 0.15s ease, filter 0.15s ease, border-color 0.15s ease;
+    }
+
+    .btn-primary {
+      background: linear-gradient(135deg, #c89b3c, #a47922);
+      color: #09101a;
+      box-shadow: 0 8px 24px rgba(200, 155, 60, 0.22);
+    }
+
+    .btn-primary:hover {
+      filter: brightness(1.08);
+      transform: translateY(-1px);
+    }
+
+    .btn-secondary {
+      background: var(--surface);
+      color: var(--text);
+      border: 1px solid var(--border);
+    }
+
+    .btn-secondary:hover {
+      border-color: var(--blue);
+      transform: translateY(-1px);
+    }
+
+    .section-title {
+      font-size: 1.25rem;
+      font-weight: 700;
+      color: var(--gold-bright);
+      margin-bottom: 16px;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+
+    .grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+      gap: 16px;
+      margin-bottom: 44px;
+    }
+
+    .card {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 14px;
+      padding: 20px;
+    }
+
+    .card h3 {
+      font-size: 1rem;
+      color: var(--gold-bright);
+      margin-bottom: 8px;
+    }
+
+    .card p {
+      font-size: 0.92rem;
+      color: var(--muted);
+    }
+
+    .commands {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 14px;
+      overflow: hidden;
+      margin-bottom: 48px;
+    }
+
+    .cmd-row {
+      display: grid;
+      grid-template-columns: 230px 1fr;
+      gap: 12px;
+      padding: 12px 18px;
+      border-bottom: 1px solid rgba(36, 52, 77, 0.65);
+      font-size: 0.92rem;
+    }
+
+    .cmd-row:last-child { border-bottom: none; }
+
+    .cmd-name {
+      font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+      color: var(--blue);
+      font-weight: 600;
+    }
+
+    .cmd-desc { color: var(--muted); }
+
+    footer {
+      border-top: 1px solid var(--border);
+      padding-top: 24px;
+      font-size: 0.82rem;
+      color: var(--muted);
+    }
+
+    footer p + p { margin-top: 8px; }
+
+    @media (max-width: 600px) {
+      .cmd-row { grid-template-columns: 1fr; gap: 4px; }
+    }
+  </style>
+</head>
+<body>
+  <main class="container">
+    <span class="badge">Private Friend-Group Discord Bot</span>
+    <h1>Jeff Bot</h1>
+    <p class="subtitle">
+      A private, non-commercial League of Legends Discord bot for tracking match stats,
+      timeline VOD reviews, squad synergy, and AI-assisted post-game coaching with friends.
+    </p>
+
+    <div class="cta-row">
+      <a
+        class="btn btn-primary"
+        href="https://discord.com/oauth2/authorize?client_id=1481699572697927821&permissions=84992&integration_type=0&scope=bot+applications.commands"
+        target="_blank"
+        rel="noopener noreferrer"
+      >
+        Install Jeff Bot on Discord
+      </a>
+      <a
+        class="btn btn-secondary"
+        href="https://github.com/gcole14/Jeff-Bot"
+        target="_blank"
+        rel="noopener noreferrer"
+      >
+        GitHub Repository
+      </a>
+    </div>
+
+    <h2 class="section-title">What It Does</h2>
+    <section class="grid">
+      <article class="card">
+        <h3>Daily &amp; Weekly Recaps</h3>
+        <p>Automated Discord summaries tracking win rate, KDA, CS/min, vision score, damage share, LP progression, and squad awards.</p>
+      </article>
+      <article class="card">
+        <h3>Timeline VOD Coaching</h3>
+        <p>Analyzes Match-v5 timelines (@10/@15 lane gold &amp; CS diffs, objective timings, and item spikes) for structured post-game feedback.</p>
+      </article>
+      <article class="card">
+        <h3>Wins vs. Losses &amp; Pool Audit</h3>
+        <p>Compares winning vs. losing game habits, audits champion pool win rates by role, and tracks measurable weekly goals.</p>
+      </article>
+      <article class="card">
+        <h3>Squad Synergy &amp; Debriefs</h3>
+        <p>Detects completed group matches for combined post-game debriefs and tracks duo/squad win rates compared to solo play.</p>
+      </article>
+      <article class="card">
+        <h3>Live Match Overview</h3>
+        <p>Checks which friends are currently in a live game and displays ranks, champion mastery, and matchup context after loading in.</p>
+      </article>
+      <article class="card">
+        <h3>Responsible API Caching</h3>
+        <p>Caches immutable Match-v5 and timeline payloads locally in SQLite to avoid redundant requests and respect Riot rate limits.</p>
+      </article>
+    </section>
+
+    <h2 class="section-title">Slash Commands</h2>
+    <section class="commands">
+      <div class="cmd-row"><span class="cmd-name">/stats player [days] [queue]</span><span class="cmd-desc">Player stats, rank, LP delta, and top champions</span></div>
+      <div class="cmd-row"><span class="cmd-name">/review player [game_ago]</span><span class="cmd-desc">Match-v5 timeline VOD breakdown and coaching takeaways</span></div>
+      <div class="cmd-row"><span class="cmd-name">/coach player [days]</span><span class="cmd-desc">Wins-vs-losses stat split and personalized coaching tips</span></div>
+      <div class="cmd-row"><span class="cmd-name">/pool player [days]</span><span class="cmd-desc">Champion pool audit and role performance breakdown</span></div>
+      <div class="cmd-row"><span class="cmd-name">/goal player [refresh]</span><span class="cmd-desc">View or set a measurable weekly improvement goal</span></div>
+      <div class="cmd-row"><span class="cmd-name">/synergy [days]</span><span class="cmd-desc">Squad and duo win rates together vs. solo</span></div>
+      <div class="cmd-row"><span class="cmd-name">/debrief</span><span class="cmd-desc">Combined scoreboard for your squad's latest group match</span></div>
+      <div class="cmd-row"><span class="cmd-name">/live &bull; /scout player</span><span class="cmd-desc">Active game status and live matchup overview</span></div>
+      <div class="cmd-row"><span class="cmd-name">/versus &bull; /damage &bull; /mastery</span><span class="cmd-desc">Head-to-head comparison, weekly damage leaderboard, and top mastery</span></div>
+    </section>
+
+    <footer>
+      <p>
+        Jeff Bot is a personal, non-commercial fan project built for a private friend group.
+      </p>
+      <p>
+        Jeff Bot isn't endorsed by Riot Games and doesn't reflect the views or opinions of Riot Games
+        or anyone officially involved in producing or managing Riot Games properties. Riot Games,
+        and all associated properties are trademarks or registered trademarks of Riot Games, Inc.
+      </p>
+    </footer>
+  </main>
+</body>
+</html>
