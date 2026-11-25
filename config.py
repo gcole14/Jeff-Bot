@@ -67,6 +67,8 @@ RANK_CHECK_INTERVAL_HOURS = int(os.getenv("RANK_CHECK_INTERVAL_HOURS", "2"))
 ANNOUNCE_DEMOTIONS = os.getenv("ANNOUNCE_DEMOTIONS", "true").strip().lower() not in ("0", "false", "no")
 SQUAD_DEBRIEF_ENABLED = os.getenv("SQUAD_DEBRIEF_ENABLED", "true").strip().lower() not in ("0", "false", "no")
 SQUAD_CHECK_INTERVAL_MINUTES = int(os.getenv("SQUAD_CHECK_INTERVAL_MINUTES", "10"))
+PATCH_CHECK_ENABLED = os.getenv("PATCH_CHECK_ENABLED", "true").strip().lower() not in ("0", "false", "no")
+PATCH_CHECK_INTERVAL_HOURS = int(os.getenv("PATCH_CHECK_INTERVAL_HOURS", "4"))
 
 # --- Storage ---
 DB_PATH = os.getenv("DB_PATH", str(BASE_DIR / "jeff_bot.db"))

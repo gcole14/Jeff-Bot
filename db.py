@@ -98,6 +98,13 @@ class Database:
                 riot_id TEXT NOT NULL,
                 linked_at INTEGER NOT NULL
             );
+
+            CREATE TABLE IF NOT EXISTS announced_patches (
+                patch_version TEXT PRIMARY KEY,
+                url TEXT NOT NULL,
+                summary_json TEXT,
+                announced_at INTEGER NOT NULL
+            );
             """
         )
         self._conn.commit()
@@ -428,6 +435,54 @@ class Database:
         )
         row = cur.fetchone()
         return row["riot_id"] if row else None
+
+    # -------------------------------------------------------------------------
+    # Patch notes tracking & summary cache
+    # -------------------------------------------------------------------------
+
+    def get_announced_patch(self, patch_version: str) -> Optional[dict]:
+        cur = self._conn.execute(
+            "SELECT patch_version, url, summary_json, announced_at "
+            "FROM announced_patches WHERE patch_version = ?",
+            (patch_version,),
+        )
+        row = cur.fetchone()
+        if not row:
+            return None
+        d = dict(row)
+        if d.get("summary_json"):
+            try:
+                d["summary"] = json.loads(d["summary_json"])
+            except json.JSONDecodeError:
+                d["summary"] = None
+        else:
+            d["summary"] = None
+        return d
+
+    def save_announced_patch(
+        self, patch_version: str, url: str, summary: Optional[dict] = None
+    ) -> None:
+        self._conn.execute(
+            """
+            INSERT INTO announced_patches (patch_version, url, summary_json, announced_at)
+            VALUES (?, ?, ?, ?)
+            ON CONFLICT(patch_version) DO UPDATE SET
+                url = excluded.url,
+                summary_json = COALESCE(excluded.summary_json, announced_patches.summary_json),
+                announced_at = excluded.announced_at
+            """,
+            (
+                patch_version,
+                url,
+                json.dumps(summary) if summary is not None else None,
+                int(time.time()),
+            ),
+        )
+        self._conn.commit()
+
+    def count_announced_patches(self) -> int:
+        cur = self._conn.execute("SELECT COUNT(*) FROM announced_patches")
+        return int(cur.fetchone()[0])
 
     # -------------------------------------------------------------------------
     # Legacy migration

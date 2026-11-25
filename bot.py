@@ -23,6 +23,7 @@ from cards import (
     render_goal_card,
     render_mastery_card,
     render_match_card,
+    render_patch_card,
     render_player_card,
     render_pool_card,
     render_rank_change_card,
@@ -53,6 +54,8 @@ from config import (
     RANK_CHECK_INTERVAL_HOURS,
     SQUAD_DEBRIEF_ENABLED,
     SQUAD_CHECK_INTERVAL_MINUTES,
+    PATCH_CHECK_ENABLED,
+    PATCH_CHECK_INTERVAL_HOURS,
     DB_PATH,
     RANK_HISTORY_FILE,
 )
@@ -81,6 +84,7 @@ from embeds import (
     build_ai_embed,
     build_status_embed,
 )
+from patch_notes import PatchNotesFetcher
 from riot_api import RiotAPI
 from stats import StatsAggregator, RankTracker, resolve_riot_id
 
@@ -119,6 +123,7 @@ db.migrate_legacy_rank_history(RANK_HISTORY_FILE)
 
 riot = RiotAPI()
 assets = AssetCache(riot)
+patch_fetcher = PatchNotesFetcher()
 deepseek = DeepSeekClient()
 aggregator = StatsAggregator(riot, db)
 rank_tracker = RankTracker(aggregator, db)
@@ -135,6 +140,7 @@ class JeffBot(commands.Bot):
         if scheduler.running:
             scheduler.shutdown(wait=False)
         await assets.close()
+        await patch_fetcher.close()
         await riot.close()
         await deepseek.close()
         db.close()
@@ -281,6 +287,86 @@ async def check_squad_debriefs() -> None:
         logger.exception(f"Squad debrief check failed: {e}")
 
 
+async def _get_squad_top_champs() -> dict[str, list[str]]:
+    """Collects each tracked friend's recently played champions for personalized patch callouts."""
+    result: dict[str, list[str]] = {}
+    try:
+        stats = await aggregator.get_weekly_stats()
+        for ps in stats:
+            if not ps.error and ps.top_champions:
+                result[ps.display_name] = [c for c, _ in ps.top_champions]
+    except Exception as e:
+        logger.debug(f"Could not fetch squad champs for patch summary: {e}")
+    return result
+
+
+async def build_latest_patch_payload(force_refresh: bool = False) -> tuple[Optional[dict], Optional[dict], Optional[str]]:
+    """Fetches latest official Riot patch notes + cached or fresh DeepSeek summary."""
+    info = await patch_fetcher.get_latest_patch_info()
+    if not info:
+        return None, None, "Could not fetch official Riot patch notes right now."
+
+    cached = db.get_announced_patch(info["version"])
+    if cached and cached.get("summary") and not force_refresh:
+        return info, cached["summary"], None
+
+    if not deepseek.is_configured:
+        return info, None, "DeepSeek AI is required to summarize patch notes (set DEEPSEEK_API_KEY in .env)."
+
+    squad_champs = await _get_squad_top_champs()
+    summary = await deepseek.summarize_patch_notes(
+        version=info["version"],
+        body_text=info["body_text"],
+        squad_champs=squad_champs,
+    )
+    if not summary:
+        return info, None, "DeepSeek did not return a patch summary — try again in a moment."
+
+    db.save_announced_patch(info["version"], info["url"], summary=summary)
+    return info, summary, None
+
+
+async def check_new_patch() -> None:
+    if not PATCH_CHECK_ENABLED:
+        return
+    try:
+        info = await patch_fetcher.get_latest_patch_info()
+        if not info:
+            return
+        if db.get_announced_patch(info["version"]):
+            return
+
+        # On first-ever run, seed current patch silently so we don't spam an already-live patch;
+        # every future patch release will auto-post immediately!
+        if db.count_announced_patches() == 0:
+            db.save_announced_patch(info["version"], info["url"], summary=None)
+            logger.info(f"Seeded baseline patch {info['version']} (future patches will auto-announce).")
+            return
+
+        channel = await _get_target_channel()
+        if not channel or not deepseek.is_configured:
+            return
+
+        squad_champs = await _get_squad_top_champs()
+        summary = await deepseek.summarize_patch_notes(
+            version=info["version"],
+            body_text=info["body_text"],
+            squad_champs=squad_champs,
+        )
+        if not summary:
+            return
+
+        card_buf = await render_patch_card(summary, assets, publish_date=info.get("publish_date", ""))
+        await channel.send(
+            content=f"🆕 **League of Legends Patch {info['version']} is live!** <{info['url']}>",
+            file=discord.File(card_buf, filename=f"patch_{info['version']}.png"),
+        )
+        db.save_announced_patch(info["version"], info["url"], summary=summary)
+        logger.info(f"Auto-announced new Patch {info['version']}!")
+    except Exception as e:
+        logger.exception(f"Patch check failed: {e}")
+
+
 @bot.event
 async def on_ready():
     logger.info(f"Logged in as {bot.user} (ID: {bot.user.id})")
@@ -326,18 +412,28 @@ async def on_ready():
             id="squad_debrief_check",
             replace_existing=True,
         )
+    if PATCH_CHECK_ENABLED:
+        scheduler.add_job(
+            check_new_patch,
+            IntervalTrigger(hours=max(1, PATCH_CHECK_INTERVAL_HOURS)),
+            id="patch_notes_check",
+            replace_existing=True,
+        )
 
     scheduler.start()
     logger.info(
         f"Scheduler started. Daily at {DAILY_HOUR}:{DAILY_MINUTE:02d}, "
         f"Weekly on {WEEKLY_DAY} at {WEEKLY_HOUR}:{WEEKLY_MINUTE:02d} ({TIMEZONE}), "
         f"Rank check every {RANK_CHECK_INTERVAL_HOURS}h, "
-        f"Squad debriefs {'every ' + str(SQUAD_CHECK_INTERVAL_MINUTES) + 'm' if SQUAD_DEBRIEF_ENABLED else 'disabled'}."
+        f"Squad debriefs {'every ' + str(SQUAD_CHECK_INTERVAL_MINUTES) + 'm' if SQUAD_DEBRIEF_ENABLED else 'disabled'}, "
+        f"Patch watch {'every ' + str(PATCH_CHECK_INTERVAL_HOURS) + 'h' if PATCH_CHECK_ENABLED else 'disabled'}."
     )
 
     asyncio.create_task(check_rank_changes())
     if SQUAD_DEBRIEF_ENABLED:
         asyncio.create_task(aggregator.seed_announced_squad_games())
+    if PATCH_CHECK_ENABLED:
+        asyncio.create_task(check_new_patch())
     bot._setup_done = True
 
 
@@ -1238,13 +1334,33 @@ async def slash_status(interaction: discord.Interaction):
     await interaction.followup.send(embed=embed, ephemeral=True)
 
 
+@bot.tree.command(name="patch", description="Render an ASCII card of the latest LoL patch buffs, nerfs & squad impact")
+@app_commands.describe(refresh="Re-generate the AI summary instead of using cached notes")
+async def slash_patch(interaction: discord.Interaction, refresh: bool = False):
+    await interaction.response.defer()
+    try:
+        info, summary, err = await build_latest_patch_payload(force_refresh=refresh)
+        if err or not info or not summary:
+            await interaction.followup.send(f"❌ {err or 'Could not load patch notes.'}")
+            return
+        card_buf = await render_patch_card(summary, assets, publish_date=info.get("publish_date", ""))
+        await interaction.followup.send(
+            content=f"📜 **Full Patch {info['version']} Notes:** <{info['url']}>",
+            file=discord.File(card_buf, filename=f"patch_{info['version']}.png"),
+        )
+    except Exception as e:
+        logger.exception(f"Patch command failed: {e}")
+        await interaction.followup.send(f"❌ Could not load patch notes: {e}")
+
+
 @bot.tree.command(name="lolhelp", description="Show all Jeff Bot commands")
 async def slash_help(interaction: discord.Interaction):
     embed = discord.Embed(title="📋 Jeff Bot Commands", color=0xC89B3C)
     embed.add_field(
         name="🧠 AI Coaching & Scouting (DeepSeek)",
         value=(
-            "`/build [champion] [enemies] [allies] [player]` — Adaptive item build card & runes\n"
+            "`/patch [refresh]` — Latest LoL patch buffs, nerfs & squad impact card\n"
+            "`/build [player] [champion] [enemies]` — Adaptive item build card & runes\n"
             "`/review player [game_ago]` — Timeline VOD review card (@10/@15 diffs, throws, build)\n"
             "`/coach player [days]` — Wins vs. Losses coaching breakdown\n"
             "`/pool player [days]` — Climb Champs vs. LP Bleed audit\n"

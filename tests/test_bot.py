@@ -419,6 +419,7 @@ def test_full_pipeline_caching_coaching_scout_debrief_and_embeds(tmp_path):
         render_goal_card,
         render_mastery_card,
         render_match_card,
+        render_patch_card,
         render_player_card,
         render_pool_card,
         render_rank_change_card,
@@ -427,6 +428,14 @@ def test_full_pipeline_caching_coaching_scout_debrief_and_embeds(tmp_path):
         render_synergy_card,
         render_versus_card,
     )
+    from patch_notes import parse_patch_html_to_text
+
+    parsed_patch = parse_patch_html_to_text(
+        "<h2>Champions</h2><h3>Ezreal</h3><p>W damage up</p><h2>Bugfixes &amp; QoL Changes</h2><p>ignored</p>"
+    )
+    assert "Ezreal" in parsed_patch and "ignored" not in parsed_patch
+    db.save_announced_patch("26.23", "https://example.com/26-23", summary={"patch": "26.23", "buffs": []})
+    assert db.get_announced_patch("26.23")["summary"]["patch"] == "26.23"
 
     class OfflineAssets(AssetCache):
         async def _fetch_image(self, url, rel_path):
@@ -455,6 +464,21 @@ def test_full_pipeline_caching_coaching_scout_debrief_and_embeds(tmp_path):
         asyncio.run(render_rank_change_card(events[0], offline_assets)),
         asyncio.run(render_rank_change_card(events[1], offline_assets)),
         asyncio.run(render_goal_card("Cookmysock", 1234, ev, offline_assets, is_new=True)),
+        asyncio.run(
+            render_patch_card(
+                {
+                    "patch": "26.23",
+                    "headline": "Ezreal & Vi Buffs, Syndra Nerfed, Winter Rift Returns",
+                    "buffs": [{"champion": "Ezreal", "summary": "W & R damage increased"}],
+                    "nerfs": [{"champion": "Syndra", "summary": "E stun duration lowered"}],
+                    "adjusted": [{"champion": "K'Sante", "summary": "W damage shifted"}],
+                    "items_and_systems": [{"name": "Voltaic Cyclosword", "tag": "NERF", "summary": "Proc damage lowered"}],
+                    "squad_alerts": ["Cookmysock: Ezreal buffed!"],
+                },
+                offline_assets,
+                publish_date="2026-11-18",
+            )
+        ),
         asyncio.run(
             render_match_card(
                 "Cookmysock", "Ahri", True, "Ranked Solo", 1800, 10, 2, 8, 210, 7.0,

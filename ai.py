@@ -370,6 +370,76 @@ class DeepSeekClient:
         return None
 
     # -------------------------------------------------------------------------
+    # 7. Patch Notes Summarizer (/patch & Auto Patch Alerts)
+    # -------------------------------------------------------------------------
+
+    async def summarize_patch_notes(
+        self,
+        version: str,
+        body_text: str,
+        squad_champs: Optional[dict[str, list[str]]] = None,
+    ) -> Optional[dict]:
+        """Summarizes official Riot patch notes into structured buffs, nerfs, items/systems & squad alerts."""
+        squad_section = ""
+        if squad_champs:
+            lines = [
+                f"- {name}: {', '.join(champs)}"
+                for name, champs in squad_champs.items()
+                if champs
+            ]
+            if lines:
+                squad_section = (
+                    "\nOur friend group's recently played champions (flag any that got changed!):\n"
+                    + "\n".join(lines)
+                    + "\n"
+                )
+
+        prompt = (
+            f"Summarize official League of Legends Patch {version} notes strictly from the text below.\n"
+            f"{squad_section}\n"
+            "Return ONLY valid JSON matching this exact schema:\n"
+            "{\n"
+            f'  "patch": "{version}",\n'
+            '  "headline": "Punchy 5-10 word headline of the biggest patch themes",\n'
+            '  "buffs": [\n'
+            '    {"champion": "ExactChampionName", "summary": "concise 4-8 word buff summary"}\n'
+            "  ],\n"
+            '  "nerfs": [\n'
+            '    {"champion": "ExactChampionName", "summary": "concise 4-8 word nerf summary"}\n'
+            "  ],\n"
+            '  "adjusted": [\n'
+            '    {"champion": "ExactChampionName", "summary": "concise 4-8 word adjustment summary"}\n'
+            "  ],\n"
+            '  "items_and_systems": [\n'
+            '    {"name": "Item or System Name", "tag": "BUFF|NERF|ADJ|NEW", "summary": "concise 5-9 word change"}\n'
+            "  ],\n"
+            '  "squad_alerts": [\n'
+            '    "Short 1-line callout if a friend plays a changed champ, or key meta takeaway"\n'
+            "  ]\n"
+            "}\n"
+            "Limits: up to 6 buffs, up to 6 nerfs, up to 3 adjusted (Summoner's Rift champions first), "
+            "up to 4 items_and_systems (include notable items, modes like ARAM: Mayhem, or features), "
+            "up to 3 squad_alerts. Use exact official English champion names.\n\n"
+            f"OFFICIAL PATCH NOTES:\n{body_text}"
+        )
+        raw = await self._chat(
+            COACH_SYSTEM_PROMPT,
+            prompt,
+            max_tokens=720,
+            temperature=0.25,
+            json_mode=True,
+        )
+        if not raw:
+            return None
+        try:
+            data = json.loads(raw)
+            if isinstance(data, dict) and (data.get("buffs") or data.get("nerfs") or data.get("items_and_systems")):
+                return data
+        except json.JSONDecodeError as e:
+            logger.warning(f"DeepSeek patch summary JSON parse failed: {e}")
+        return None
+
+    # -------------------------------------------------------------------------
     # Existing Recap / Roast / LastGame / Rank Alert Methods
     # -------------------------------------------------------------------------
 

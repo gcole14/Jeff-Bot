@@ -33,6 +33,23 @@ ASSET_CACHE_DIR = Path(os.path.dirname(os.path.abspath(DB_PATH))) / "assets"
 CHAMP_KEY_OVERRIDES = {
     "FiddleSticks": "Fiddlesticks",
     "Wukong": "MonkeyKing",
+    "LeBlanc": "Leblanc",
+    "Vel'Koz": "Velkoz",
+    "VelKoz": "Velkoz",
+    "Cho'Gath": "Chogath",
+    "ChoGath": "Chogath",
+    "Kha'Zix": "Khazix",
+    "KhaZix": "Khazix",
+    "Kai'Sa": "Kaisa",
+    "KaiSa": "Kaisa",
+    "Bel'Veth": "Belveth",
+    "BelVeth": "Belveth",
+    "K'Sante": "KSante",
+    "Kog'Maw": "KogMaw",
+    "Rek'Sai": "RekSai",
+    "Dr. Mundo": "DrMundo",
+    "Renata Glasc": "Renata",
+    "Nunu & Willump": "Nunu",
 }
 
 CHAMP_DISPLAY_OVERRIDES = {
@@ -192,7 +209,10 @@ class AssetCache:
         if not champ_name:
             return None
         ver = await self._dd_version()
-        key = CHAMP_KEY_OVERRIDES.get(champ_name, champ_name.replace(" ", "").replace("'", ""))
+        key = CHAMP_KEY_OVERRIDES.get(
+            champ_name,
+            champ_name.replace(" ", "").replace("'", "").replace(".", ""),
+        )
         url = f"https://ddragon.leagueoflegends.com/cdn/{ver}/img/champion/{key}.png"
         img = await self._fetch_image(url, f"champ/{key}.png")
         if img is None and key != champ_name:
@@ -1979,4 +1999,147 @@ async def render_goal_card(
         d.text((cx, 384), val, font=_font(32, weight="Bold", mono=True), fill=col)
 
     _draw_footer(canvas, "WEEKLY GOAL TRACKER  •  JEFF BOT")
+    return _to_png_bytes(canvas)
+
+
+# -------------------------------------------------------------------------
+# 15. League Patch Notes Summary Card (/patch & Auto Patch Alerts)
+# -------------------------------------------------------------------------
+
+async def render_patch_card(
+    summary: dict,
+    assets: AssetCache,
+    publish_date: str = "",
+) -> io.BytesIO:
+    """Renders a sleek ASCII-backdrop Patch Notes card with Buffs, Nerfs, Items/Systems & Squad Impact."""
+    W, H = 1400, 900
+    patch_ver = str(summary.get("patch") or "NEW")
+    headline = (summary.get("headline") or f"Patch {patch_ver} Gameplay Highlights").strip()
+    buffs = [b for b in (summary.get("buffs") or []) if b.get("champion")][:6]
+    nerfs = [n for n in (summary.get("nerfs") or []) if n.get("champion")][:6]
+    adjusted = [a for a in (summary.get("adjusted") or []) if a.get("champion")][:3]
+    sys_items = [s for s in (summary.get("items_and_systems") or []) if s.get("name")][:4]
+    squad_alerts = [str(x).strip() for x in (summary.get("squad_alerts") or []) if str(x).strip()][:3]
+
+    champ_names = [b["champion"] for b in buffs] + [n["champion"] for n in nerfs] + [a["champion"] for a in adjusted]
+    unique_champs = list(dict.fromkeys(champ_names))
+    fetched = await asyncio.gather(*[assets.get_champion_icon(c) for c in unique_champs]) if unique_champs else []
+    c_img_map = dict(zip(unique_champs, fetched))
+
+    canvas = _render_ascii_backdrop(W, H)
+    d = ImageDraw.Draw(canvas)
+
+    def _wrap(text: str, max_chars: int, max_lines: int) -> list[str]:
+        lines: list[str] = []
+        cur = ""
+        for w in (text or "").split():
+            cand = f"{cur} {w}".strip()
+            if len(cand) <= max_chars:
+                cur = cand
+            else:
+                if cur:
+                    lines.append(cur)
+                cur = w
+                if len(lines) == max_lines:
+                    break
+        if cur and len(lines) < max_lines:
+            lines.append(cur)
+        elif len(lines) == max_lines and len(" ".join(lines)) < len((text or "").strip()):
+            lines[-1] = lines[-1][: max_chars - 1].rstrip(" .,;") + "…"
+        return lines
+
+    # --- Header ---
+    _spaced_text(d, (58, 38), "LEAGUE OF LEGENDS  •  PATCH UPDATE", _font(15, weight="Bold", mono=True), (242, 200, 96, 245), tracking=3.2)
+    d.text((58, 64), f"Patch {patch_ver} Notes", font=_font(52, weight="Bold"), fill=(248, 250, 255, 255))
+    sub_line = headline
+    if publish_date:
+        sub_line = f"{publish_date}  •  {headline}"
+    d.text((60, 128), sub_line[:88], font=_font(19, weight="Regular"), fill=(176, 198, 228, 240))
+
+    # --- Top Columns: BUFFS (left) & NERFS (right) ---
+    col_w, col_h = 626, 446
+    top_y = 176
+
+    def _draw_change_column(x0: int, header_txt: str, entries: list[dict], accent: tuple, ring2: tuple):
+        panel = Image.new("RGBA", (col_w, col_h), (0, 0, 0, 0))
+        pd = ImageDraw.Draw(panel)
+        pd.rounded_rectangle((0, 0, col_w - 1, col_h - 1), radius=16, fill=(10, 18, 34, 214), outline=(*accent, 155), width=2)
+        canvas.alpha_composite(panel, (x0, top_y))
+
+        d.rounded_rectangle((x0 + 22, top_y + 18, x0 + 32, top_y + 38), radius=3, fill=(*accent, 255))
+        _spaced_text(d, (x0 + 44, top_y + 18), header_txt, _font(17, weight="Bold", mono=True), (*accent, 255), tracking=2.6)
+        d.line([(x0 + 22, top_y + 48), (x0 + col_w - 22, top_y + 48)], fill=(52, 74, 110, 160), width=1)
+
+        if not entries:
+            d.text((x0 + col_w // 2, top_y + col_h // 2), "None highlighted this patch", font=_font(18), fill=(138, 160, 192, 220), anchor="mm")
+            return
+
+        row_h = 62
+        for idx, item in enumerate(entries[:6]):
+            ry = top_y + 60 + idx * row_h
+            if idx > 0:
+                d.line([(x0 + 22, ry - 4), (x0 + col_w - 22, ry - 4)], fill=(32, 48, 78, 120), width=1)
+
+            cname = item["champion"]
+            _paste_circular_portrait(canvas, c_img_map.get(cname), (x0 + 50, ry + 26), 46, accent, ring2, 2, cname)
+            d.text((x0 + 86, ry + 4), _display_champ_name(cname), font=_font(20, weight="SemiBold"), fill=(246, 250, 255, 255))
+            d.text((x0 + 86, ry + 30), (item.get("summary") or "")[:58], font=_font(15, weight="Regular"), fill=(176, 198, 226, 238))
+
+    _draw_change_column(58, "CHAMPION BUFFS", buffs, (84, 236, 148), (56, 188, 224))
+    _draw_change_column(716, "CHAMPION NERFS", nerfs, (255, 108, 118), (192, 66, 126))
+
+    # --- Bottom Left: Items, Systems & Adjusted ---
+    bot_y = 644
+    bot_h = 196
+    l_panel = Image.new("RGBA", (col_w, bot_h), (0, 0, 0, 0))
+    lpd = ImageDraw.Draw(l_panel)
+    lpd.rounded_rectangle((0, 0, col_w - 1, bot_h - 1), radius=16, fill=(10, 18, 34, 214), outline=(236, 192, 92, 145), width=2)
+    canvas.alpha_composite(l_panel, (58, bot_y))
+
+    _spaced_text(d, (82, bot_y + 16), "ITEMS, SYSTEMS & ADJUSTED", _font(15, weight="Bold", mono=True), (242, 200, 96, 250), tracking=2.4)
+    d.line([(80, bot_y + 42), (58 + col_w - 22, bot_y + 42)], fill=(52, 74, 110, 155), width=1)
+
+    combined_sys = []
+    for s in sys_items:
+        combined_sys.append((s["name"], (s.get("tag") or "SYS").upper()[:4], s.get("summary", "")))
+    for a in adjusted:
+        combined_sys.append((a["champion"], "ADJ", a.get("summary", "")))
+
+    tag_colors = {
+        "BUFF": ((20, 92, 58, 225), (92, 242, 160, 255)),
+        "NERF": ((118, 28, 42, 225), (255, 134, 142, 255)),
+        "ADJ": ((74, 58, 20, 225), (244, 204, 96, 255)),
+        "NEW": ((24, 68, 118, 225), (112, 218, 255, 255)),
+    }
+    for idx, (name, tag, desc) in enumerate(combined_sys[:4]):
+        ry = bot_y + 54 + idx * 34
+        bg, fg = tag_colors.get(tag, ((46, 58, 86, 225), (196, 212, 238, 255)))
+        d.rounded_rectangle((80, ry, 134, ry + 24), radius=6, fill=bg)
+        d.text((107, ry + 12), tag, font=_font(12, weight="Bold", mono=True), fill=fg, anchor="mm")
+        d.text((146, ry + 2), f"{name}: ", font=_font(16, weight="SemiBold"), fill=(242, 246, 255, 255))
+        nw = int(d.textlength(f"{name}: ", font=_font(16, weight="SemiBold")))
+        max_desc = max(14, int((col_w - 110 - nw) / 8.2))
+        d.text((146 + nw, ry + 3), desc[:max_desc], font=_font(15, weight="Regular"), fill=(176, 198, 226, 235))
+
+    # --- Bottom Right: Squad Impact ---
+    r_panel = Image.new("RGBA", (col_w, bot_h), (0, 0, 0, 0))
+    rpd = ImageDraw.Draw(r_panel)
+    rpd.rounded_rectangle((0, 0, col_w - 1, bot_h - 1), radius=16, fill=(10, 18, 34, 214), outline=(186, 126, 255, 155), width=2)
+    canvas.alpha_composite(r_panel, (716, bot_y))
+
+    _spaced_text(d, (740, bot_y + 16), "SQUAD IMPACT & TAKEAWAYS", _font(15, weight="Bold", mono=True), (210, 156, 255, 250), tracking=2.4)
+    d.line([(738, bot_y + 42), (716 + col_w - 22, bot_y + 42)], fill=(52, 74, 110, 155), width=1)
+
+    if squad_alerts:
+        ay = bot_y + 54
+        for alert in squad_alerts[:3]:
+            for li, line_txt in enumerate(_wrap(alert, max_chars=58, max_lines=2)):
+                prefix = "• " if li == 0 else "  "
+                d.text((740, ay), f"{prefix}{line_txt}", font=_font(16, weight="Medium" if li == 0 else "Regular"), fill=(224, 232, 248, 245))
+                ay += 21
+            ay += 6
+    else:
+        d.text((740, bot_y + 72), "• Check the buffs & nerfs above for your mains!", font=_font(16), fill=(176, 198, 226, 235))
+
+    _draw_footer(canvas, f"PATCH {patch_ver} BRIEFING  •  JEFF BOT")
     return _to_png_bytes(canvas)
