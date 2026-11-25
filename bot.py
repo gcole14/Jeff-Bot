@@ -5,6 +5,7 @@ import sys
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Optional
+from zoneinfo import ZoneInfo
 
 import discord
 from discord import app_commands
@@ -61,7 +62,6 @@ from config import (
 )
 from db import Database
 from embeds import (
-    build_daily_embed,
     build_weekly_embed,
     build_player_snapshot_embed,
     build_lastgame_embed,
@@ -171,12 +171,10 @@ async def post_daily(target_channel: Optional[discord.abc.Messageable] = None) -
     logger.info("Posting daily recap...")
     try:
         stats = await aggregator.get_daily_stats()
-        commentary = await deepseek.summarize_recap(stats, period="daily") if deepseek.is_configured else None
-        date_str = datetime.now(timezone.utc).strftime("%B %d, %Y")
+        date_str = datetime.now(ZoneInfo(TIMEZONE)).strftime("%B %d, %Y")
         card_buf = await render_squad_card(stats, "Daily LoL Recap", f"{date_str} • Last 24 Hours", assets)
-        embeds = build_daily_embed(stats, commentary=commentary)
-        # Send rendered squad card image + awards/Jeff's Take embed
-        await channel.send(file=discord.File(card_buf, filename="daily_recap.png"), embed=embeds[1])
+        # The card carries everything; no follow-up text embed.
+        await channel.send(file=discord.File(card_buf, filename="daily_recap.png"))
         logger.info("Daily recap posted successfully.")
         return True, "Daily recap posted!"
     except Exception as e:
@@ -389,13 +387,13 @@ async def on_ready():
 
     scheduler.add_job(
         post_daily,
-        CronTrigger(hour=DAILY_HOUR, minute=DAILY_MINUTE),
+        CronTrigger(hour=DAILY_HOUR, minute=DAILY_MINUTE, timezone=TIMEZONE),
         id="daily_recap",
         replace_existing=True,
     )
     scheduler.add_job(
         post_weekly,
-        CronTrigger(day_of_week=WEEKLY_DAY, hour=WEEKLY_HOUR, minute=WEEKLY_MINUTE),
+        CronTrigger(day_of_week=WEEKLY_DAY, hour=WEEKLY_HOUR, minute=WEEKLY_MINUTE, timezone=TIMEZONE),
         id="weekly_digest",
         replace_existing=True,
     )
