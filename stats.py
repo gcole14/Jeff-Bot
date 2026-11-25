@@ -190,6 +190,7 @@ class PlayerStats:
         self.total_deaths: int = 0
         self.total_assists: int = 0
         self.total_cs: int = 0
+        self.total_gold: int = 0
         self.total_vision_score: int = 0
         self.total_control_wards: int = 0
         self.total_damage_to_champions: int = 0
@@ -225,6 +226,23 @@ class PlayerStats:
     def cs_per_min(self) -> float:
         minutes = self.total_game_duration_seconds / 60
         return self.total_cs / minutes if minutes > 0 else 0.0
+
+    @property
+    def gold_per_min(self) -> float:
+        minutes = self.total_game_duration_seconds / 60
+        return self.total_gold / minutes if minutes > 0 else 0.0
+
+    @property
+    def avg_kills(self) -> float:
+        return self.total_kills / self.games_played if self.games_played else 0.0
+
+    @property
+    def avg_deaths(self) -> float:
+        return self.total_deaths / self.games_played if self.games_played else 0.0
+
+    @property
+    def avg_assists(self) -> float:
+        return self.total_assists / self.games_played if self.games_played else 0.0
 
     @property
     def avg_vision_score(self) -> float:
@@ -275,6 +293,26 @@ class PlayerStats:
     def top_champions(self) -> list[tuple[str, int]]:
         sorted_champs = sorted(self.champion_counts.items(), key=lambda x: x[1], reverse=True)
         return sorted_champs[:3]
+
+    @property
+    def top_champions_detailed(self) -> list[dict]:
+        """Top 3 champions with games, wins, losses, and win rate."""
+        buckets: dict[str, list[int]] = defaultdict(lambda: [0, 0])  # [games, wins]
+        for m in self.matches:
+            buckets[m.champion][0] += 1
+            if m.win:
+                buckets[m.champion][1] += 1
+        ranked = sorted(buckets.items(), key=lambda kv: (kv[1][0], kv[1][1]), reverse=True)
+        return [
+            {
+                "name": cname,
+                "games": g,
+                "wins": w,
+                "losses": g - w,
+                "wr": (w / g * 100) if g else 0.0,
+            }
+            for cname, (g, w) in ranked[:3]
+        ]
 
     @property
     def overall_rank_score(self) -> int:
@@ -513,6 +551,7 @@ class StatsAggregator:
                 ps.total_deaths += rec.deaths
                 ps.total_assists += rec.assists
                 ps.total_cs += rec.cs
+                ps.total_gold += rec.gold_earned
                 ps.total_vision_score += rec.vision_score
                 ps.total_control_wards += rec.control_wards
                 ps.total_damage_to_champions += rec.damage_to_champions
@@ -1080,6 +1119,52 @@ class StatsAggregator:
         except Exception as e:
             logger.warning(f"Could not load Data Dragon items: {e}")
             return {}
+
+    async def resolve_item_ids_by_names(self, item_names: list[str]) -> tuple[str, dict[str, Optional[int]]]:
+        """Resolves English item names to Summoner's Rift Data Dragon item IDs."""
+        try:
+            version = await self.riot.get_ddragon_latest_version()
+            raw_items = (await self.riot.get_ddragon_items(version)).get("data", {})
+        except Exception:
+            version = ""
+            raw_items = {}
+
+        def _norm(s: str) -> str:
+            return "".join(ch for ch in s.lower() if ch.isalnum())
+
+        # Prefer Summoner's Rift (map 11) purchasable items with standard IDs (< 10000)
+        by_norm: dict[str, tuple[int, int]] = {}
+        for iid_str, item in raw_items.items():
+            if not iid_str.isdigit():
+                continue
+            iid = int(iid_str)
+            if iid >= 10000:
+                continue
+            maps = item.get("maps") or {}
+            in_sr = 1 if maps.get("11", True) else 0
+            purch = 1 if item.get("gold", {}).get("purchasable", True) else 0
+            gold = int(item.get("gold", {}).get("total", 0))
+            score = in_sr * 100_000 + purch * 10_000 + gold
+            k = _norm(item.get("name", ""))
+            prev = by_norm.get(k)
+            if prev is None or score > prev[1]:
+                by_norm[k] = (iid, score)
+
+        resolved: dict[str, Optional[int]] = {}
+        for name in item_names:
+            if not name:
+                continue
+            target = _norm(name)
+            if target in by_norm:
+                resolved[name] = by_norm[target][0]
+                continue
+            match_id = None
+            for k, (iid, _) in by_norm.items():
+                if target in k or k in target:
+                    match_id = iid
+                    break
+            resolved[name] = match_id
+        return version, resolved
 
     async def get_champion_mastery(self, riot_id: str, count: int = 10) -> dict:
         result: dict = {

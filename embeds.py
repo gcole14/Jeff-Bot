@@ -655,6 +655,54 @@ def build_ask_embed(question: str, answer: str, asker: str) -> discord.Embed:
     return embed
 
 
+def build_item_build_embed(
+    champion: str,
+    build: dict,
+    enemies: Optional[list[str]] = None,
+    allies: Optional[list[str]] = None,
+    role: str = "",
+    patch: str = "",
+) -> discord.Embed:
+    """Concise companion rationale embed attached beneath the rendered Build Path PNG card."""
+    title_role = f" ({role})" if role else ""
+    embed = discord.Embed(
+        title=f"🛠️ {champion}{title_role} — Build Breakdown",
+        color=LOL_GOLD,
+        timestamp=datetime.now(timezone.utc),
+    )
+    if build.get("gameplan"):
+        embed.description = _truncate(build["gameplan"], 4096)
+
+    core_lines = []
+    if build.get("starter", {}).get("item"):
+        core_lines.append(f"**Starter:** {build['starter']['item']} — *{build['starter'].get('why', '')}*")
+    if build.get("boots", {}).get("item"):
+        core_lines.append(f"**Boots:** {build['boots']['item']} — *{build['boots'].get('why', '')}*")
+    for idx, c in enumerate(build.get("core", [])[:3], 1):
+        core_lines.append(f"**Core {idx}:** {c['item']} — *{c.get('why', '')}*")
+    if core_lines:
+        embed.add_field(name="⚔️ Core Order", value=_truncate("\n".join(core_lines), 1024), inline=False)
+
+    sit_lines = [
+        f"• **{s['item']}** — *{s.get('why', '')}*"
+        for s in build.get("situational", [])[:3]
+        if s.get("item")
+    ]
+    if sit_lines:
+        embed.add_field(name="🔮 Situational Swaps", value=_truncate("\n".join(sit_lines), 1024), inline=False)
+
+    if build.get("runes"):
+        embed.add_field(name="✨ Runes", value=_truncate(build["runes"], 1024), inline=True)
+    if enemies:
+        embed.add_field(name="🔴 vs Enemy", value=_truncate(", ".join(enemies), 1024), inline=True)
+    if allies:
+        embed.add_field(name="🔵 Allies", value=_truncate(", ".join(allies), 1024), inline=True)
+
+    footer = f"Patch {patch} • Powered by DeepSeek" if patch else "Powered by DeepSeek"
+    embed.set_footer(text=footer)
+    return embed
+
+
 # -------------------------------------------------------------------------
 # Rank Alerts, Versus, Damage, Synergy, Live, Mastery, Roast, Status
 # -------------------------------------------------------------------------

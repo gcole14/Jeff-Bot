@@ -14,6 +14,14 @@ from apscheduler.triggers.cron import CronTrigger
 from apscheduler.triggers.interval import IntervalTrigger
 
 from ai import DeepSeekClient
+from cards import (
+    AssetCache,
+    render_build_card,
+    render_match_card,
+    render_player_card,
+    render_squad_card,
+    render_versus_card,
+)
 from coaching import (
     compute_champion_pool_audit,
     compute_win_loss_split,
@@ -53,6 +61,7 @@ from embeds import (
     build_squad_debrief_embed,
     build_comp_embed,
     build_ask_embed,
+    build_item_build_embed,
     build_promotion_embed,
     build_demotion_embed,
     build_versus_embed,
@@ -100,6 +109,7 @@ db.seed_roster(SUMMONERS)
 db.migrate_legacy_rank_history(RANK_HISTORY_FILE)
 
 riot = RiotAPI()
+assets = AssetCache(riot)
 deepseek = DeepSeekClient()
 aggregator = StatsAggregator(riot, db)
 rank_tracker = RankTracker(aggregator, db)
@@ -115,6 +125,7 @@ class JeffBot(commands.Bot):
     async def close(self) -> None:
         if scheduler.running:
             scheduler.shutdown(wait=False)
+        await assets.close()
         await riot.close()
         await deepseek.close()
         db.close()
@@ -146,9 +157,11 @@ async def post_daily(target_channel: Optional[discord.abc.Messageable] = None) -
     try:
         stats = await aggregator.get_daily_stats()
         commentary = await deepseek.summarize_recap(stats, period="daily") if deepseek.is_configured else None
+        date_str = datetime.now(timezone.utc).strftime("%B %d, %Y")
+        card_buf = await render_squad_card(stats, "Daily LoL Recap", f"{date_str} • Last 24 Hours", assets)
         embeds = build_daily_embed(stats, commentary=commentary)
-        for embed in embeds:
-            await channel.send(embed=embed)
+        # Send rendered squad card image + awards/Jeff's Take embed
+        await channel.send(file=discord.File(card_buf, filename="daily_recap.png"), embed=embeds[1])
         logger.info("Daily recap posted successfully.")
         return True, "Daily recap posted!"
     except Exception as e:
@@ -189,10 +202,20 @@ async def post_weekly(target_channel: Optional[discord.abc.Messageable] = None) 
             if deepseek.is_configured
             else None
         )
+        active = [ps for ps in stats if ps.games_played > 0 and not ps.error]
+        total_games = sum(ps.games_played for ps in active)
+        total_hours = sum(ps.hours_played for ps in active)
+        card_buf = await render_squad_card(
+            stats,
+            "Weekly LoL Digest",
+            f"Last 7 Days • {total_games} Games • {total_hours:.1f}h Played",
+            assets,
+        )
         embeds = build_weekly_embed(
             stats, commentary=commentary, synergy=synergy, goal_grades=goal_grades or None
         )
-        for embed in embeds:
+        await channel.send(file=discord.File(card_buf, filename="weekly_digest.png"))
+        for embed in embeds[1:]:
             await channel.send(embed=embed)
         logger.info("Weekly digest posted successfully.")
         return True, "Weekly digest posted!"
@@ -349,10 +372,20 @@ async def slash_weekly(interaction: discord.Interaction):
     await interaction.followup.send(f"{'✅' if ok else '❌'} {msg}", ephemeral=True)
 
 
-@bot.tree.command(name="stats", description="Look up a player's stats")
+ROLE_CHOICES = [
+    app_commands.Choice(name="Auto / Main Role", value=""),
+    app_commands.Choice(name="Top", value="Top"),
+    app_commands.Choice(name="Jungle", value="Jungle"),
+    app_commands.Choice(name="Mid", value="Mid"),
+    app_commands.Choice(name="ADC", value="ADC"),
+    app_commands.Choice(name="Support", value="Support"),
+]
+
+
+@bot.tree.command(name="stats", description="Render a visual League stats card for a player")
 @app_commands.describe(
     player="Player nickname (tracked) or full Name#TAG",
-    days="Lookback window in days (default: 1 = last 24h)",
+    days="Lookback window in days (default: 7)",
     queue="Optional queue filter",
 )
 @app_commands.choices(queue=QUEUE_CHOICES)
@@ -360,7 +393,7 @@ async def slash_weekly(interaction: discord.Interaction):
 async def slash_stats(
     interaction: discord.Interaction,
     player: str,
-    days: app_commands.Range[int, 1, 30] = 1,
+    days: app_commands.Range[int, 1, 30] = 7,
     queue: int = 0,
 ):
     try:
@@ -370,16 +403,19 @@ async def slash_stats(
         return
     await interaction.response.defer()
     try:
+        qlabel = QUEUE_LABEL_MAP.get(queue, "All Queues")
         data = await aggregator.get_player_snapshot(resolved, days=days, queue=(queue or None))
-        embed = build_player_snapshot_embed(
-            data, days=days, queue_label=QUEUE_LABEL_MAP.get(queue, "All Queues")
-        )
-        await interaction.followup.send(embed=embed)
+        if data.error:
+            await interaction.followup.send(embed=build_player_snapshot_embed(data, days=days, queue_label=qlabel))
+            return
+        card_buf = await render_player_card(data, assets, days=days, queue_label=qlabel)
+        await interaction.followup.send(file=discord.File(card_buf, filename=f"{data.display_name}_stats.png"))
     except Exception as e:
+        logger.exception(f"Stats card failed for {resolved}: {e}")
         await interaction.followup.send(f"❌ Could not fetch stats for `{resolved}`: {e}")
 
 
-@bot.tree.command(name="lastgame", description="Detailed breakdown of a player's most recent game")
+@bot.tree.command(name="lastgame", description="Visual match card & Jeff's take on a player's latest game")
 @app_commands.describe(player="Player nickname (tracked) or full Name#TAG")
 @app_commands.autocomplete(player=player_autocomplete)
 async def slash_lastgame(interaction: discord.Interaction, player: str):
@@ -391,14 +427,182 @@ async def slash_lastgame(interaction: discord.Interaction, player: str):
     await interaction.response.defer()
     try:
         game = await aggregator.get_last_game(resolved)
-        commentary = (
-            await deepseek.comment_last_game(game)
-            if deepseek.is_configured and game.get("match") and not game.get("error")
-            else None
+        if game.get("error") or not game.get("match"):
+            await interaction.followup.send(embed=build_lastgame_embed(game))
+            return
+        m = game["match"]
+        commentary, card_buf = await asyncio.gather(
+            deepseek.comment_last_game(game) if deepseek.is_configured else asyncio.sleep(0, result=None),
+            render_match_card(
+                display_name=game["display_name"],
+                champion=m.champion,
+                win=m.win,
+                queue_name=m.queue_name,
+                duration_seconds=m.duration_seconds,
+                kills=m.kills,
+                deaths=m.deaths,
+                assists=m.assists,
+                cs=m.cs,
+                cs_per_min=m.cs_per_min,
+                damage=m.damage_to_champions,
+                damage_share=m.damage_share,
+                kp=m.kill_participation,
+                vision=m.vision_score,
+                gold=m.gold_earned,
+                assets=assets,
+                item_ids=m.item_ids,
+                role=m.role,
+            ),
         )
-        await interaction.followup.send(embed=build_lastgame_embed(game, commentary=commentary))
+        content = f"**🧠 Jeff's Take:** {commentary}" if commentary else None
+        friends = game.get("friends_in_game") or []
+        if friends:
+            squad_line = f"🤝 **Squadmates:** {', '.join(friends)}"
+            content = f"{squad_line}\n{content}" if content else squad_line
+        await interaction.followup.send(
+            content=content,
+            file=discord.File(card_buf, filename=f"{game['display_name']}_lastgame.png"),
+        )
     except Exception as e:
+        logger.exception(f"Lastgame failed for {resolved}: {e}")
         await interaction.followup.send(f"❌ Could not fetch last game for `{resolved}`: {e}")
+
+
+@bot.tree.command(name="build", description="Recommended item build path & runes tailored to your lobby")
+@app_commands.describe(
+    champion="Your champion (optional if 'player' is currently in a live game)",
+    enemies="Enemy champions, comma-separated (e.g. Malphite, Zed, Mundo, Jinx, Soraka)",
+    allies="Optional ally champions, comma-separated",
+    role="Optional role",
+    player="Optional player currently in a live game (auto-fills all 10 champions!)",
+    notes="Optional notes (e.g. 'enemy Zed is 5-0', 'need frontline', 'ARAM')",
+)
+@app_commands.choices(role=ROLE_CHOICES)
+@app_commands.autocomplete(player=player_autocomplete)
+async def slash_build(
+    interaction: discord.Interaction,
+    champion: Optional[str] = None,
+    enemies: Optional[str] = None,
+    allies: Optional[str] = None,
+    role: str = "",
+    player: Optional[str] = None,
+    notes: str = "",
+):
+    if not deepseek.is_configured:
+        await interaction.response.send_message(
+            "⚠️ DeepSeek AI is not configured yet. Add `DEEPSEEK_API_KEY` to `.env` to unlock `/build`.",
+            ephemeral=True,
+        )
+        return
+    if not champion and not player:
+        await interaction.response.send_message(
+            "❌ Pass either `champion` (e.g. `/build champion:Ahri enemies:Malphite, Zed, Mundo`) "
+            "or `player` while they are in a live game!",
+            ephemeral=True,
+        )
+        return
+
+    await interaction.response.defer()
+    try:
+        enemy_list = [e.strip() for e in (enemies or "").split(",") if e.strip()]
+        ally_list = [a.strip() for a in (allies or "").split(",") if a.strip()]
+        chosen_champ = (champion or "").strip()
+
+        # Auto-detect live lobby if player was provided
+        if player:
+            try:
+                resolved = resolve_riot_id(player, aggregator.get_roster())
+                puuid, _, _ = await aggregator._resolve_player(resolved)
+                live_game = await riot.get_active_game(puuid)
+                if live_game:
+                    _, champ_map = await aggregator._get_champion_name_map()
+                    parts = live_game.get("participants", [])
+                    me = next((p for p in parts if p.get("puuid") == puuid), None)
+                    my_tid = int(me.get("teamId", 100)) if me else 100
+                    if me and not chosen_champ:
+                        chosen_champ = champ_map.get(int(me.get("championId", 0)), "")
+                    if not enemy_list:
+                        enemy_list = [
+                            champ_map.get(int(p.get("championId", 0)), "Unknown")
+                            for p in parts
+                            if int(p.get("teamId", -1)) != my_tid
+                        ]
+                    if not ally_list:
+                        ally_list = [
+                            champ_map.get(int(p.get("championId", 0)), "Unknown")
+                            for p in parts
+                            if int(p.get("teamId", -1)) == my_tid and p.get("puuid") != puuid
+                        ]
+                elif not chosen_champ:
+                    await interaction.followup.send(
+                        f"ℹ️ `{player}` isn't currently in a live game. Pass `champion` manually "
+                        "(e.g. `/build champion:Ahri enemies:Zed, Malphite, Mundo`)!"
+                    )
+                    return
+            except Exception as e:
+                if not chosen_champ:
+                    await interaction.followup.send(f"❌ Live lookup failed: {e}")
+                    return
+
+        if not chosen_champ:
+            await interaction.followup.send("❌ Could not determine champion — please specify `champion`.")
+            return
+
+        try:
+            patch = await riot.get_ddragon_latest_version()
+        except Exception:
+            patch = ""
+
+        build = await deepseek.recommend_build(
+            champion=chosen_champ,
+            enemies=enemy_list,
+            allies=ally_list,
+            role=role,
+            patch=patch,
+            notes=notes,
+        )
+        if not build:
+            await interaction.followup.send("❌ DeepSeek didn't return a build — try again in a second.")
+            return
+
+        all_item_names = []
+        if build.get("starter", {}).get("item"):
+            all_item_names.append(build["starter"]["item"])
+        if build.get("boots", {}).get("item"):
+            all_item_names.append(build["boots"]["item"])
+        for c in build.get("core", []):
+            if c.get("item"):
+                all_item_names.append(c["item"])
+        for s in build.get("situational", []):
+            if s.get("item"):
+                all_item_names.append(s["item"])
+
+        patch_ver, item_id_map = await aggregator.resolve_item_ids_by_names(all_item_names)
+        card_buf = await render_build_card(
+            champion=chosen_champ,
+            build=build,
+            item_ids=item_id_map,
+            assets=assets,
+            enemies=enemy_list,
+            allies=ally_list,
+            role=role,
+            patch=patch_ver or patch,
+        )
+        embed = build_item_build_embed(
+            champion=chosen_champ,
+            build=build,
+            enemies=enemy_list,
+            allies=ally_list,
+            role=role,
+            patch=patch_ver or patch,
+        )
+        await interaction.followup.send(
+            file=discord.File(card_buf, filename=f"{chosen_champ.lower()}_build.png"),
+            embed=embed,
+        )
+    except Exception as e:
+        logger.exception(f"Build recommendation failed: {e}")
+        await interaction.followup.send(f"❌ Build recommendation failed: {e}")
 
 
 # -------------------------------------------------------------------------
@@ -427,10 +631,37 @@ async def slash_review(
         if err or not report:
             await interaction.followup.send(f"❌ Could not review match for `{resolved}`: {err or 'Not found'}")
             return
-        review_text = (
-            await deepseek.review_match_timeline(report) if deepseek.is_configured else None
+        review_text, (_, item_id_map) = await asyncio.gather(
+            deepseek.review_match_timeline(report) if deepseek.is_configured else asyncio.sleep(0, result=None),
+            aggregator.resolve_item_ids_by_names(report.final_items),
         )
-        await interaction.followup.send(embed=build_review_embed(report, review_text))
+        card_buf = await render_match_card(
+            display_name=report.display_name,
+            champion=report.champion,
+            win=report.win,
+            queue_name=report.queue_name,
+            duration_seconds=report.duration_seconds,
+            kills=report.kills,
+            deaths=report.deaths,
+            assists=report.assists,
+            cs=report.cs,
+            cs_per_min=report.cs_per_min,
+            damage=report.damage_to_champions,
+            damage_share=report.damage_share,
+            kp=report.kill_participation,
+            vision=report.vision_score,
+            gold=report.gold_earned,
+            assets=assets,
+            item_ids=[item_id_map.get(n) or 0 for n in report.final_items],
+            lane_opponent=report.lane_opponent_champ,
+            gold_diff_10=report.gold_diff_10,
+            gold_diff_15=report.gold_diff_15,
+            role=report.role,
+        )
+        await interaction.followup.send(
+            file=discord.File(card_buf, filename=f"{report.display_name}_vod.png"),
+            embed=build_review_embed(report, review_text),
+        )
     except Exception as e:
         await interaction.followup.send(f"❌ VOD review failed: {e}")
 
@@ -681,7 +912,13 @@ async def slash_versus(interaction: discord.Interaction, player1: str, player2: 
             aggregator._fetch_player_stats(p1, start_epoch),
             aggregator._fetch_player_stats(p2, start_epoch),
         )
-        await interaction.followup.send(embed=build_versus_embed(a, b))
+        if a.error or b.error:
+            await interaction.followup.send(embed=build_versus_embed(a, b))
+            return
+        card_buf = await render_versus_card(a, b, assets)
+        await interaction.followup.send(
+            file=discord.File(card_buf, filename=f"{a.display_name}_vs_{b.display_name}.png")
+        )
     except Exception as e:
         await interaction.followup.send(f"❌ Versus lookup failed: {e}")
 
@@ -848,7 +1085,8 @@ async def slash_help(interaction: discord.Interaction):
     embed.add_field(
         name="🧠 AI Coaching & Scouting (DeepSeek)",
         value=(
-            "`/review player [game_ago]` — Timeline VOD review (@10/@15 diffs, throws, build)\n"
+            "`/build [champion] [enemies] [allies] [player]` — Adaptive item build card & runes\n"
+            "`/review player [game_ago]` — Timeline VOD review card (@10/@15 diffs, throws, build)\n"
             "`/coach player [days]` — Wins vs. Losses coaching breakdown\n"
             "`/pool player [days]` — Climb Champs vs. LP Bleed audit\n"
             "`/goal player [refresh]` — Track your weekly measurable coaching goal\n"

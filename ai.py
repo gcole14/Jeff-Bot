@@ -1,4 +1,5 @@
 import aiohttp
+import json
 import logging
 import ssl
 from typing import Optional
@@ -64,6 +65,7 @@ class DeepSeekClient:
         user_prompt: str,
         max_tokens: int = 300,
         temperature: float = 0.75,
+        json_mode: bool = False,
     ) -> Optional[str]:
         if not self.is_configured:
             return None
@@ -73,7 +75,7 @@ class DeepSeekClient:
             "Authorization": f"Bearer {self.api_key}",
             "Content-Type": "application/json",
         }
-        payload = {
+        payload: dict = {
             "model": self.model,
             "messages": [
                 {"role": "system", "content": system_prompt},
@@ -82,6 +84,8 @@ class DeepSeekClient:
             "max_tokens": max_tokens,
             "temperature": temperature,
         }
+        if json_mode:
+            payload["response_format"] = {"type": "json_object"}
 
         try:
             session = await self._get_session()
@@ -303,6 +307,67 @@ class DeepSeekClient:
             "when relevant, and League expertise for matchup/build/macro questions."
         )
         return await self._chat(COACH_SYSTEM_PROMPT, prompt, max_tokens=340, temperature=0.6)
+
+    # -------------------------------------------------------------------------
+    # 6. Adaptive Build Recommender (/build)
+    # -------------------------------------------------------------------------
+
+    async def recommend_build(
+        self,
+        champion: str,
+        enemies: list[str],
+        allies: Optional[list[str]] = None,
+        role: str = "",
+        patch: str = "",
+        notes: str = "",
+    ) -> Optional[dict]:
+        """Returns structured JSON build path adapted to the enemy & ally team comps."""
+        enemy_str = ", ".join(enemies) if enemies else "Standard mixed damage enemy comp"
+        ally_str = ", ".join(allies) if allies else "Not specified"
+        role_str = role or "Standard main role"
+        patch_str = patch or "current League of Legends patch"
+        extra = f"\nExtra context: {notes}" if notes else ""
+
+        prompt = (
+            f"Recommend the optimal League of Legends item build order and runes for {champion} "
+            f"({role_str}) on {patch_str}.\n"
+            f"Enemy team: {enemy_str}\n"
+            f"Ally team: {ally_str}{extra}\n\n"
+            "Return ONLY valid JSON with exact official current-season English League item names "
+            "(no removed Mythics like Mythic Galeforce/Mythic Duskblade/Everfrost/Crown) in this schema:\n"
+            "{\n"
+            '  "starter": {"item": "Exact Item Name", "why": "short 6-10 word reason"},\n'
+            '  "boots": {"item": "Exact Boots Name", "why": "short 6-10 word reason"},\n'
+            '  "core": [\n'
+            '    {"item": "1st Item", "why": "short reason tailored to enemy comp"},\n'
+            '    {"item": "2nd Item", "why": "short reason tailored to enemy comp"},\n'
+            '    {"item": "3rd Item", "why": "short reason tailored to enemy comp"}\n'
+            "  ],\n"
+            '  "situational": [\n'
+            '    {"item": "Situational 1", "why": "short trigger e.g. Anti-heal vs Soraka/Mundo"},\n'
+            '    {"item": "Situational 2", "why": "short trigger"},\n'
+            '    {"item": "Situational 3", "why": "short trigger"}\n'
+            "  ],\n"
+            '  "runes": "Keystone + Secondary tree (e.g. Electrocute • Sorcery)",\n'
+            '  "gameplan": "1-2 concise sentences on power spikes and how to play into this enemy comp."\n'
+            "}"
+        )
+        raw = await self._chat(
+            COACH_SYSTEM_PROMPT,
+            prompt,
+            max_tokens=480,
+            temperature=0.35,
+            json_mode=True,
+        )
+        if not raw:
+            return None
+        try:
+            data = json.loads(raw)
+            if isinstance(data, dict) and data.get("core"):
+                return data
+        except json.JSONDecodeError as e:
+            logger.warning(f"DeepSeek build JSON parse failed: {e}")
+        return None
 
     # -------------------------------------------------------------------------
     # Existing Recap / Roast / LastGame / Rank Alert Methods

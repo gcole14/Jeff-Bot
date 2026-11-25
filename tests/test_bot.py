@@ -407,4 +407,65 @@ def test_full_pipeline_caching_coaching_scout_debrief_and_embeds(tmp_path):
     assert asyncio.run(ai.summarize_recap(stats_again)) is None
     assert asyncio.run(ai.roast_player(a)) is None
 
+    # Card rendering & item name lookup (offline with fake assets)
+    from cards import (
+        AssetCache,
+        render_build_card,
+        render_match_card,
+        render_player_card,
+        render_squad_card,
+        render_versus_card,
+    )
+
+    class OfflineAssets(AssetCache):
+        async def _fetch_image(self, url, rel_path):
+            return None
+
+    offline_assets = OfflineAssets(fake_riot, cache_dir=tmp_path / "assets")
+    ver, resolved_items = asyncio.run(
+        agg.resolve_item_ids_by_names(["Luden's Companion", "Shadowflame", "Unknown Item"])
+    )
+    assert ver == "14.23.1"
+    assert resolved_items["Luden's Companion"] == 6655
+    assert resolved_items["Shadowflame"] == 4645
+    assert resolved_items["Unknown Item"] is None
+
+    for buf in [
+        asyncio.run(render_player_card(a, offline_assets, days=7)),
+        asyncio.run(render_versus_card(a, b, offline_assets)),
+        asyncio.run(render_squad_card(stats_again, "Daily", "Test", offline_assets)),
+        asyncio.run(
+            render_match_card(
+                "Cookmysock", "Ahri", True, "Ranked Solo", 1800, 10, 2, 8, 210, 7.0,
+                30000, 32.0, 68.0, 24, 14200, offline_assets, item_ids=[6655, 4645],
+                lane_opponent="Zed", gold_diff_10=600, gold_diff_15=1100, role="Mid",
+            )
+        ),
+        asyncio.run(
+            render_build_card(
+                "Ahri",
+                {
+                    "starter": {"item": "Doran's Ring", "why": "Mana sustain"},
+                    "boots": {"item": "Sorcerer's Shoes", "why": "Magic pen"},
+                    "core": [
+                        {"item": "Luden's Companion", "why": "Burst"},
+                        {"item": "Shadowflame", "why": "Execute"},
+                        {"item": "Zhonya's Hourglass", "why": "vs Zed"},
+                    ],
+                    "situational": [{"item": "Morellonomicon", "why": "Anti-heal"}],
+                    "runes": "Electrocute • Sorcery",
+                    "gameplan": "Spike on 2 items and roam.",
+                },
+                resolved_items,
+                offline_assets,
+                enemies=["Zed", "Malphite"],
+                allies=["LeeSin"],
+                role="Mid",
+                patch="14.23.1",
+            )
+        ),
+    ]:
+        data = buf.getvalue()
+        assert data[:8] == b"\x89PNG\r\n\x1a\n" and len(data) > 10_000
+
     db.close()

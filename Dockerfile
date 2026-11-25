@@ -8,7 +8,8 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-COPY ai.py bot.py coaching.py config.py db.py embeds.py riot_api.py stats.py ./
+COPY ai.py bot.py cards.py coaching.py config.py db.py embeds.py riot_api.py stats.py ./
+COPY assets ./assets
 
 RUN mkdir -p /data
 
