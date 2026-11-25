@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import Optional
 
 import aiohttp
-from PIL import Image, ImageDraw, ImageFilter, ImageFont
+from PIL import Image, ImageDraw, ImageEnhance, ImageFilter, ImageFont
 
 try:
     import certifi
@@ -220,6 +220,21 @@ class AssetCache:
             img = await self._fetch_image(url2, f"champ/{champ_name}.png")
         return img
 
+    async def get_champion_splash(self, champ_name: str) -> Optional[Image.Image]:
+        """Fetches & caches Riot's official HD champion splash art for Splash-to-ASCII backdrops."""
+        if not champ_name:
+            return None
+        key = CHAMP_KEY_OVERRIDES.get(
+            champ_name,
+            champ_name.replace(" ", "").replace("'", "").replace(".", ""),
+        )
+        url = f"https://ddragon.leagueoflegends.com/cdn/img/champion/splash/{key}_0.jpg"
+        img = await self._fetch_image(url, f"splash/{key}_0.jpg")
+        if img is None and key != champ_name:
+            url2 = f"https://ddragon.leagueoflegends.com/cdn/img/champion/splash/{champ_name}_0.jpg"
+            img = await self._fetch_image(url2, f"splash/{champ_name}_0.jpg")
+        return img
+
     async def get_item_icon(self, item_id: int) -> Optional[Image.Image]:
         if not item_id:
             return None
@@ -243,10 +258,12 @@ class AssetCache:
 
 
 # -------------------------------------------------------------------------
-# Procedural Moonlit Citadel ASCII Backdrop (Cached)
+# 6 Runeterra Procedural ASCII Backdrops + Live Champion Splash-to-ASCII
 # -------------------------------------------------------------------------
 
 _backdrop_cache: dict[tuple[int, int, str], Image.Image] = {}
+_splash_backdrop_cache: dict[tuple[int, int, str], Image.Image] = {}
+_MAX_SPLASH_CACHE = 16
 
 
 def _hash2(x: int, y: int) -> float:
@@ -276,7 +293,6 @@ def _fbm(x: float, y: float) -> float:
 
 
 def _mountain_far_y(nx: float) -> float:
-    """Far misty mountain peaks across the upper right (y in 0.24..0.38)."""
     return (
         0.365
         - 0.095 * math.exp(-((nx - 0.52) / 0.085) ** 2)
@@ -289,7 +305,6 @@ def _mountain_far_y(nx: float) -> float:
 
 
 def _castle_silhouette_y(nx: float) -> float:
-    """Gothic citadel spires & foreground ridge right in front of the moon (strictly above stats row)."""
     ridge = (
         0.395
         - 0.060 * math.exp(-((nx - 0.58) / 0.095) ** 2)
@@ -297,14 +312,12 @@ def _castle_silhouette_y(nx: float) -> float:
         - 0.085 * math.exp(-((nx - 0.92) / 0.09) ** 2)
         - 0.014 * math.sin(nx * 54.0) * max(0.0, nx - 0.44)
     )
-    # Detailed gothic castle towers & tall central spires cutting cleanly across the full moon
     towers = [
-        # (center_x, half_width, wall_y, spire_height)
         (0.692, 0.011, 0.345, 0.075),
         (0.716, 0.008, 0.335, 0.065),
         (0.742, 0.012, 0.315, 0.105),
         (0.768, 0.010, 0.305, 0.115),
-        (0.793, 0.016, 0.285, 0.195),  # Grand cathedral spire piercing high into the moon
+        (0.793, 0.016, 0.285, 0.195),
         (0.818, 0.011, 0.305, 0.125),
         (0.842, 0.012, 0.320, 0.090),
         (0.866, 0.009, 0.340, 0.060),
@@ -313,54 +326,151 @@ def _castle_silhouette_y(nx: float) -> float:
     for cx, hw, wall_y, spire_h in towers:
         dx = abs(nx - cx)
         if dx <= hw:
-            # Steep needle spire roof atop a crisp tower shaft
             spire_top = wall_y - spire_h * (1.0 - (dx / hw) ** 0.55)
             y = min(y, spire_top)
         elif dx <= hw * 1.65:
-            # Castle rampart & battlements
             notch = 0.007 if int(nx * 320) % 2 == 0 else 0.0
             y = min(y, wall_y + 0.025 + notch)
     return y
 
 
-def _render_ascii_backdrop(width: int = 1400, height: int = 788, theme: str = "midnight") -> Image.Image:
-    """Renders the signature midnight-navy + lush moonlit ASCII citadel backdrop (cached)."""
+def _shurima_silhouette_y(nx: float) -> float:
+    """Twin pyramids + central Shuriman obelisk spire rising toward the Sun Disc."""
+    dune = 0.395 - 0.032 * math.sin(nx * 14.0 + 0.4) - 0.016 * math.cos(nx * 29.0)
+    # Left pyramid, right pyramid, central obelisk
+    p1 = 0.24 + abs(nx - 0.61) * 1.45 if abs(nx - 0.61) < 0.11 else 1.0
+    p2 = 0.25 + abs(nx - 0.90) * 1.35 if abs(nx - 0.90) < 0.11 else 1.0
+    obelisk = 0.19 + abs(nx - 0.785) * 4.5 if abs(nx - 0.785) < 0.032 else 1.0
+    return min(dune, p1, p2, obelisk)
+
+
+def _ionia_silhouette_y(nx: float) -> float:
+    """Steep misty Ionian karst pillars + pagoda shrine roof."""
+    pillars = [
+        (0.49, 0.036, 0.26),
+        (0.60, 0.044, 0.21),
+        (0.72, 0.038, 0.24),
+        (0.85, 0.052, 0.19),
+        (0.95, 0.042, 0.25),
+    ]
+    y = 0.41 - 0.02 * math.sin(nx * 22.0)
+    for cx, hw, top_y in pillars:
+        dx = abs(nx - cx)
+        if dx < hw:
+            # Steep flat-topped karst pillar with organic rock slope
+            t = dx / hw
+            y = min(y, top_y + 0.17 * (t ** 2.6))
+    # Pagoda eaves atop pillar at 0.60
+    if abs(nx - 0.60) < 0.035:
+        eave = 0.178 + abs(nx - 0.60) * 0.85
+        y = min(y, eave)
+    return y
+
+
+def _zaun_skyline_y(nx: float) -> float:
+    """Geometric Piltover/Zaun Art-Deco towers & clocktower spires."""
+    towers = [
+        (0.47, 0.018, 0.30),
+        (0.53, 0.022, 0.25),
+        (0.59, 0.016, 0.28),
+        (0.66, 0.026, 0.22),
+        (0.73, 0.019, 0.26),
+        (0.79, 0.028, 0.16),  # Grand Piltover clocktower
+        (0.86, 0.024, 0.23),
+        (0.93, 0.028, 0.27),
+    ]
+    y = 0.39
+    for cx, hw, top_y in towers:
+        dx = abs(nx - cx)
+        if dx <= hw:
+            # Stepped Art-Deco silhouette
+            step = 0.03 if dx > hw * 0.58 else 0.0
+            needle = -0.045 * (1.0 - dx / (hw * 0.18)) if dx < hw * 0.18 else 0.0
+            y = min(y, top_y + step + needle)
+    return y
+
+
+def _noxus_peaks_y(nx: float) -> float:
+    """Jagged obsidian Noxian fortress & volcanic bastion peaks."""
+    ridge = (
+        0.385
+        - 0.11 * math.exp(-((nx - 0.54) / 0.075) ** 2)
+        - 0.13 * math.exp(-((nx - 0.68) / 0.08) ** 2)
+        - 0.14 * math.exp(-((nx - 0.89) / 0.085) ** 2)
+        - 0.024 * abs(math.sin(nx * 44.0)) * max(0.0, nx - 0.35)
+    )
+    # Immortal Bastion central jagged horn spires
+    if abs(nx - 0.785) < 0.045:
+        horn = 0.26 + 0.09 * math.exp(-((nx - 0.785) / 0.014) ** 2) - 0.07 * (1.0 - abs(nx - 0.785) / 0.045)
+        ridge = min(ridge, horn)
+    return ridge
+
+
+THEME_BASES = {
+    "citadel": ((5, 10, 22), (10, 23, 46), (36, 58, 96)),
+    "midnight": ((5, 10, 22), (10, 23, 46), (36, 58, 96)),
+    "shurima": ((12, 9, 5), (26, 20, 11), (96, 76, 36)),
+    "ionia": ((5, 13, 18), (10, 28, 36), (36, 86, 94)),
+    "zaun": ((5, 12, 16), (9, 28, 34), (34, 92, 96)),
+    "crimson": ((14, 5, 10), (30, 10, 18), (104, 38, 52)),
+    "cosmic": ((7, 6, 20), (16, 12, 42), (68, 50, 118)),
+}
+
+
+def _render_ascii_backdrop(width: int = 1400, height: int = 788, theme: str = "citadel") -> Image.Image:
+    """Renders one of 6 Runeterra procedural ASCII backdrops (cached in memory)."""
+    if theme == "midnight":
+        theme = "citadel"
     cache_key = (width, height, theme)
     if cache_key in _backdrop_cache:
         return _backdrop_cache[cache_key].copy()
 
-    # 1. Base midnight gradient canvas
-    base = Image.new("RGBA", (width, height), (5, 10, 20, 255))
+    bot_rgb, top_rgb, border_rgb = THEME_BASES.get(theme, THEME_BASES["citadel"])
+
+    # 1. Base gradient canvas
+    base = Image.new("RGBA", (width, height), (*bot_rgb, 255))
     bg_draw = ImageDraw.Draw(base)
     for y in range(height):
-        t = y / height
-        r = int(5 + 5 * (1 - t))
-        g = int(10 + 13 * (1 - t))
-        b = int(22 + 24 * (1 - t))
+        t = 1.0 - y / height
+        r = int(bot_rgb[0] + (top_rgb[0] - bot_rgb[0]) * t)
+        g = int(bot_rgb[1] + (top_rgb[1] - bot_rgb[1]) * t)
+        b = int(bot_rgb[2] + (top_rgb[2] - bot_rgb[2]) * t)
         bg_draw.line([(0, y), (width, y)], fill=(r, g, b, 255))
 
-    # 2. Luminous moon aura + bottom-right violet ambient glow
-    moon_cx = int(width * 0.785)
-    moon_cy = int(height * 0.185)
-    moon_r = int(height * 0.165)
+    # 2. Theme-specific celestial / ambient aura
+    cx = int(width * 0.785)
+    cy = int(height * 0.185)
+    rad = int(height * 0.165)
 
     glow = Image.new("RGBA", (width, height), (0, 0, 0, 0))
     gdraw = ImageDraw.Draw(glow)
-    for mult, col in [
-        (3.4, (22, 64, 148, 52)),
-        (2.3, (46, 118, 224, 72)),
-        (1.5, (98, 182, 255, 92)),
-        (1.08, (186, 232, 255, 112)),
-    ]:
-        rr = int(moon_r * mult)
-        gdraw.ellipse((moon_cx - rr, moon_cy - rr, moon_cx + rr, moon_cy + rr), fill=col)
 
+    glow_palettes = {
+        "citadel": [((22, 64, 148, 52), 3.4), ((46, 118, 224, 72), 2.3), ((98, 182, 255, 92), 1.5), ((186, 232, 255, 112), 1.08)],
+        "shurima": [((148, 92, 18, 55), 3.5), ((214, 146, 36, 75), 2.3), ((248, 198, 78, 95), 1.45), ((255, 238, 168, 115), 1.02)],
+        "ionia": [((16, 108, 106, 52), 3.4), ((42, 164, 152, 68), 2.2), ((112, 222, 206, 86), 1.4), ((238, 148, 198, 58), 1.9)],
+        "zaun": [((12, 98, 112, 54), 3.4), ((28, 168, 156, 74), 2.2), ((72, 234, 194, 92), 1.4), ((166, 255, 232, 100), 1.0)],
+        "crimson": [((144, 18, 36, 58), 3.5), ((212, 38, 54, 80), 2.2), ((255, 98, 72, 98), 1.38), ((255, 188, 118, 110), 1.05)],
+        "cosmic": [((72, 28, 156, 58), 3.6), ((128, 56, 222, 76), 2.3), ((96, 186, 255, 88), 1.5), ((224, 142, 255, 96), 1.08)],
+    }
+    for col, mult in glow_palettes.get(theme, glow_palettes["citadel"]):
+        rr = int(rad * mult)
+        gdraw.ellipse((cx - rr, cy - rr, cx + rr, cy + rr), fill=col)
+
+    bottom_glow = {
+        "citadel": (96, 54, 184, 62),
+        "shurima": (184, 118, 32, 58),
+        "ionia": (196, 88, 154, 52),
+        "zaun": (28, 168, 128, 58),
+        "crimson": (176, 32, 48, 62),
+        "cosmic": (132, 58, 212, 64),
+    }.get(theme, (96, 54, 184, 62))
     v_cx, v_cy, v_r = int(width * 0.88), int(height * 0.84), int(height * 0.34)
-    gdraw.ellipse((v_cx - v_r, v_cy - v_r, v_cx + v_r, v_cy + v_r), fill=(96, 54, 184, 62))
+    gdraw.ellipse((v_cx - v_r, v_cy - v_r, v_cx + v_r, v_cy + v_r), fill=bottom_glow)
     glow = glow.filter(ImageFilter.GaussianBlur(radius=42))
     base = Image.alpha_composite(base, glow)
 
-    # 3. Lush, fine-grained ASCII character matrix
+    # 3. Fine-grained ASCII character matrix
     ascii_layer = Image.new("RGBA", (width, height), (0, 0, 0, 0))
     adraw = ImageDraw.Draw(ascii_layer)
     ascii_font = _font(8, weight="Regular", mono=True)
@@ -379,93 +489,184 @@ def _render_ascii_backdrop(width: int = 1400, height: int = 788, theme: str = "m
             px = col * cell_w
             nx = px / width
 
-            # Keep far-left behind avatar completely clean, fading in smoothly from x=12%..38%
             left_fade = min(1.0, max(0.0, (nx - 0.12) / 0.26))
             if left_fade <= 0.01:
                 continue
 
-            dx_m = px - moon_cx
-            dy_m = py - moon_cy
-            dist_m = math.hypot(dx_m, dy_m)
-            in_moon = dist_m <= moon_r
-
-            far_y = _mountain_far_y(nx)
-            castle_y = _castle_silhouette_y(nx)
-
-            # Upper-scene vertical fade so ASCII horizon melts seamlessly into the dark stats strip (y ~ 0.38..0.44)
+            dx_c = px - cx
+            dy_c = py - cy
+            dist_c = math.hypot(dx_c, dy_c)
             horizon_fade = 1.0 if ny <= 0.34 else max(0.0, 1.0 - (ny - 0.34) / 0.095)
 
             intensity = 0.0
             r_col, g_col, b_col = 72, 134, 236
 
-            if ny < 0.435:
-                in_castle = ny >= castle_y and nx > 0.42
-                in_far_mtn = ny >= far_y and nx > 0.32
-
-                if in_castle:
-                    # Crisp dark gothic castle/foreground silhouette cutting sharply across the moon!
-                    edge_dist = ny - castle_y
-                    if edge_dist < 0.010 and (dist_m < moon_r * 1.45):
-                        # Thin silver-cyan rim highlight right along the backlit castle spires
-                        intensity = 0.62 * horizon_fade
-                        r_col, g_col, b_col = 148, 212, 255
+            if theme == "citadel":
+                if ny < 0.435:
+                    far_y = _mountain_far_y(nx)
+                    castle_y = _castle_silhouette_y(nx)
+                    if ny >= castle_y and nx > 0.42:
+                        if (ny - castle_y) < 0.010 and dist_c < rad * 1.45:
+                            intensity, r_col, g_col, b_col = 0.62 * horizon_fade, 148, 212, 255
+                        else:
+                            intensity = (0.12 + 0.12 * _fbm(nx * 24.0, ny * 24.0)) * horizon_fade
+                            r_col, g_col, b_col = 24, 52, 114
+                    elif dist_c <= rad:
+                        edge = max(0.0, 1.0 - (dist_c / rad) ** 2.6)
+                        crater = _fbm(nx * 20.0 + 3.1, ny * 20.0 + 1.7)
+                        intensity = min(1.0, (0.62 + 0.32 * edge + 0.24 * (crater - 0.45))) * max(0.35, horizon_fade)
+                        r_col, g_col, b_col = int(175 + 78 * intensity), int(222 + 33 * intensity), 255
+                    elif ny >= far_y and nx > 0.32:
+                        moon_lit = max(0.0, 1.0 - dist_c / (rad * 3.0))
+                        intensity = (0.34 + 0.34 * _fbm(nx * 16.0 + 2.0, ny * 16.0) + 0.22 * moon_lit) * horizon_fade * left_fade
+                        r_col, g_col, b_col = int(58 + 74 * moon_lit), int(112 + 82 * moon_lit), int(218 + 34 * moon_lit)
                     else:
-                        # Deep dark navy silhouette with very faint stone texture
-                        nval = _fbm(nx * 24.0, ny * 24.0)
-                        intensity = (0.12 + 0.12 * nval) * horizon_fade
-                        r_col, g_col, b_col = 24, 52, 114
-                elif in_moon:
-                    # Bright, densely shaded full ASCII moon with organic crater shading
-                    edge = max(0.0, 1.0 - (dist_m / moon_r) ** 2.6)
-                    crater = _fbm(nx * 20.0 + 3.1, ny * 20.0 + 1.7)
-                    intensity = min(1.0, (0.62 + 0.32 * edge + 0.24 * (crater - 0.45))) * max(0.35, horizon_fade)
-                    r_col = int(175 + 78 * intensity)
-                    g_col = int(222 + 33 * intensity)
-                    b_col = 255
-                elif in_far_mtn:
-                    # Layered moonlit indigo-blue alpine slopes behind the castle
-                    slope_depth = min(1.0, (ny - far_y) / 0.12)
-                    nval = _fbm(nx * 16.0 + 2.0, ny * 16.0)
-                    moon_lit = max(0.0, 1.0 - dist_m / (moon_r * 3.0))
-                    intensity = (0.34 + 0.34 * nval + 0.22 * moon_lit) * (1.0 - 0.35 * slope_depth) * horizon_fade * left_fade
-                    r_col = int(58 + 74 * moon_lit)
-                    g_col = int(112 + 82 * moon_lit)
-                    b_col = int(218 + 34 * moon_lit)
-                else:
-                    # Rich horizontal ASCII night-sky strata + clouds + moon halo
-                    strata = 0.5 + 0.5 * math.sin(ny * 115.0 + _fbm(nx * 6.0, ny * 6.0) * 5.0)
-                    cloud = _fbm(nx * 6.5, ny * 14.0)
-                    halo = max(0.0, 1.0 - dist_m / (moon_r * 2.9)) ** 1.55
-                    top_weight = 0.55 + 0.45 * max(0.0, 1.0 - ny / 0.36)
-                    intensity = (
-                        (0.16 + 0.34 * cloud * (0.65 + 0.35 * strata)) * top_weight
-                        + 0.56 * halo
-                    ) * left_fade * horizon_fade
-                    r_col = int(46 + 114 * halo)
-                    g_col = int(102 + 116 * halo)
-                    b_col = int(206 + 48 * halo)
+                        strata = 0.5 + 0.5 * math.sin(ny * 115.0 + _fbm(nx * 6.0, ny * 6.0) * 5.0)
+                        cloud = _fbm(nx * 6.5, ny * 14.0)
+                        halo = max(0.0, 1.0 - dist_c / (rad * 2.9)) ** 1.55
+                        intensity = ((0.16 + 0.34 * cloud * (0.65 + 0.35 * strata)) + 0.56 * halo) * left_fade * horizon_fade
+                        r_col, g_col, b_col = int(46 + 114 * halo), int(102 + 116 * halo), int(206 + 48 * halo)
 
-            elif ny > 0.58 and nx > 0.54:
-                # Lush bottom-right violet/indigo ASCII mountain waves & mist
+            elif theme == "shurima":
+                # Golden Sun Disc with radiant sunbeams + pyramids & obelisk
+                if ny < 0.44:
+                    sil_y = _shurima_silhouette_y(nx)
+                    if ny >= sil_y and nx > 0.40:
+                        if (ny - sil_y) < 0.012:
+                            intensity, r_col, g_col, b_col = 0.72 * horizon_fade, 255, 224, 134
+                        else:
+                            intensity = (0.14 + 0.14 * _fbm(nx * 20.0, ny * 20.0)) * horizon_fade
+                            r_col, g_col, b_col = 92, 62, 24
+                    elif dist_c <= rad * 0.92:
+                        # Concentric ornate Shurima Sun Disc rings
+                        ring_gap = abs(dist_c - rad * 0.62) < 6.5
+                        intensity = (0.28 if ring_gap else 0.88) * max(0.4, horizon_fade)
+                        r_col, g_col, b_col = 255, int(212 + 38 * intensity), int(112 + 86 * intensity)
+                    else:
+                        angle = math.atan2(dy_c, dx_c)
+                        rays = max(0.0, math.sin(angle * 12.0)) ** 3
+                        halo = max(0.0, 1.0 - dist_c / (rad * 3.1)) ** 1.4
+                        haze = _fbm(nx * 7.0, ny * 12.0)
+                        intensity = (0.14 * haze + 0.48 * halo + 0.32 * rays * halo) * left_fade * horizon_fade
+                        r_col, g_col, b_col = int(176 + 78 * halo), int(118 + 94 * halo), int(42 + 64 * halo)
+
+            elif theme == "ionia":
+                # Crescent moon + misty karst peaks + floating sakura petals
+                if ny < 0.44:
+                    sil_y = _ionia_silhouette_y(nx)
+                    # Crescent = inside main circle, outside offset shadow circle
+                    dist_cut = math.hypot(px - (cx - rad * 0.42), py - (cy - rad * 0.14))
+                    in_crescent = dist_c <= rad * 0.92 and dist_cut > rad * 0.78
+                    if ny >= sil_y and nx > 0.38:
+                        mist = _fbm(nx * 14.0, ny * 18.0)
+                        if (ny - sil_y) < 0.011:
+                            intensity, r_col, g_col, b_col = 0.68 * horizon_fade, 148, 244, 224
+                        else:
+                            intensity = (0.16 + 0.24 * mist) * horizon_fade
+                            r_col, g_col, b_col = 24, 92, 102
+                    elif in_crescent:
+                        intensity = 0.92 * max(0.4, horizon_fade)
+                        r_col, g_col, b_col = 228, 255, 248
+                    else:
+                        mist = _fbm(nx * 6.0, ny * 15.0)
+                        halo = max(0.0, 1.0 - dist_c / (rad * 2.7)) ** 1.6
+                        petal = _hash2(col + 19, row + 7) > 0.988
+                        if petal:
+                            intensity, r_col, g_col, b_col = 0.78 * left_fade * horizon_fade, 255, 152, 206
+                        else:
+                            intensity = (0.18 + 0.32 * mist + 0.44 * halo) * left_fade * horizon_fade
+                            r_col, g_col, b_col = int(42 + 88 * halo), int(152 + 86 * halo), int(158 + 72 * halo)
+
+            elif theme == "zaun":
+                # Art-Deco Piltover/Zaun skyline + hextech cyan beam + emerald chem-fog
+                if ny < 0.44:
+                    sky_y = _zaun_skyline_y(nx)
+                    if ny >= sky_y and nx > 0.40:
+                        # Lit tower windows inside dark geometric buildings
+                        win = (col % 3 == 0) and (row % 3 == 0) and _hash2(col, row) > 0.55
+                        if win:
+                            intensity, r_col, g_col, b_col = 0.78 * horizon_fade, 114, 248, 224
+                        elif (ny - sky_y) < 0.010:
+                            intensity, r_col, g_col, b_col = 0.68 * horizon_fade, 98, 236, 212
+                        else:
+                            intensity = 0.14 * horizon_fade
+                            r_col, g_col, b_col = 18, 66, 76
+                    else:
+                        # Hextech grid + rising vertical spotlight beams
+                        grid = 0.12 if (col % 8 == 0 or row % 5 == 0) else 0.0
+                        beam = max(0.0, 1.0 - abs(nx - 0.79) / 0.16) * max(0.0, 1.0 - ny / 0.40)
+                        fog = _fbm(nx * 8.0, ny * 14.0)
+                        intensity = (grid + 0.24 * fog + 0.52 * beam) * left_fade * horizon_fade
+                        r_col, g_col, b_col = int(38 + 68 * beam), int(162 + 84 * beam), int(168 + 62 * beam)
+
+            elif theme == "crimson":
+                # Blood Moon black solar eclipse with blazing crimson corona + Noxus bastion peaks
+                if ny < 0.44:
+                    sil_y = _noxus_peaks_y(nx)
+                    corona = math.exp(-((dist_c - rad * 0.94) / 14.0) ** 2)
+                    in_eclipse_core = dist_c < rad * 0.86
+                    if ny >= sil_y and nx > 0.36:
+                        if (ny - sil_y) < 0.012:
+                            intensity, r_col, g_col, b_col = 0.76 * horizon_fade, 255, 118, 102
+                        else:
+                            intensity = (0.14 + 0.12 * _fbm(nx * 20.0, ny * 20.0)) * horizon_fade
+                            r_col, g_col, b_col = 74, 18, 30
+                    elif in_eclipse_core:
+                        intensity = 0.08 * horizon_fade
+                        r_col, g_col, b_col = 48, 12, 22
+                    else:
+                        halo = max(0.0, 1.0 - dist_c / (rad * 2.8)) ** 1.6
+                        smoke = _fbm(nx * 7.5, ny * 14.0)
+                        ember = _hash2(col + 31, row + 13) > 0.985
+                        if ember:
+                            intensity, r_col, g_col, b_col = 0.88 * left_fade * horizon_fade, 255, 198, 112
+                        else:
+                            intensity = min(1.0, (0.16 * smoke + 0.38 * halo + 0.92 * corona)) * left_fade * horizon_fade
+                            r_col = int(176 + 79 * min(1.0, corona + halo))
+                            g_col = int(36 + 114 * corona + 42 * halo)
+                            b_col = int(56 + 44 * corona)
+
+            elif theme == "cosmic":
+                # Mount Targon spiral galaxy nebula + shooting stars
+                if ny < 0.44:
+                    targon_y = 0.39 - 0.15 * math.exp(-((nx - 0.80) / 0.075) ** 2) - 0.09 * math.exp(-((nx - 0.62) / 0.09) ** 2)
+                    if ny >= targon_y and nx > 0.42:
+                        if (ny - targon_y) < 0.011:
+                            intensity, r_col, g_col, b_col = 0.78 * horizon_fade, 196, 178, 255
+                        else:
+                            intensity = (0.14 + 0.16 * _fbm(nx * 18.0, ny * 18.0)) * horizon_fade
+                            r_col, g_col, b_col = 42, 32, 92
+                    else:
+                        ang = math.atan2(dy_c * 1.45, dx_c)
+                        spiral = 0.5 + 0.5 * math.sin(ang * 2.0 + dist_c * 0.048)
+                        arm_falloff = max(0.0, 1.0 - dist_c / (rad * 3.0)) ** 1.25
+                        star = 0.85 if _hash2(col + 5, row + 23) > 0.982 else 0.0
+                        neb = _fbm(nx * 9.0, ny * 12.0)
+                        intensity = min(1.0, (0.14 * neb + 0.68 * spiral * arm_falloff + star)) * left_fade * horizon_fade
+                        t_mix = spiral
+                        r_col = int(86 + 148 * t_mix)
+                        g_col = int(162 - 36 * t_mix + 64 * arm_falloff)
+                        b_col = 255
+
+            # Bottom-right themed ASCII foothills (all 6 themes)
+            if ny > 0.58 and nx > 0.54 and intensity == 0.0:
                 wave1 = 0.72 - 0.065 * math.sin(nx * 11.0 + 0.8) - 0.035 * math.cos(nx * 23.0)
                 wave2 = 0.84 - 0.055 * math.sin(nx * 14.0 + 2.4)
                 x_fade = min(1.0, (nx - 0.54) / 0.28)
+                b_pal = {
+                    "citadel": (132, 96, 232),
+                    "shurima": (218, 158, 62),
+                    "ionia": (82, 198, 186),
+                    "zaun": (62, 206, 168),
+                    "crimson": (218, 64, 82),
+                    "cosmic": (162, 98, 246),
+                }.get(theme, (132, 96, 232))
                 if ny >= wave2:
-                    nval = _fbm(nx * 16.0 + 9.0, ny * 16.0)
-                    intensity = (0.32 + 0.36 * nval) * x_fade * 0.68
-                    t_v = min(1.0, max(0.0, (nx - 0.58) / 0.38))
-                    r_col = int(104 + 68 * t_v)
-                    g_col = int(78 + 38 * t_v)
-                    b_col = int(218 + 30 * t_v)
+                    intensity = (0.30 + 0.34 * _fbm(nx * 16.0 + 9.0, ny * 16.0)) * x_fade * 0.64
+                    r_col, g_col, b_col = b_pal
                 elif ny >= wave1:
-                    nval = _fbm(nx * 14.0 + 4.0, ny * 14.0)
-                    intensity = (0.18 + 0.28 * nval) * x_fade * 0.55
-                    r_col, g_col, b_col = 92, 82, 206
-                else:
-                    # Subtle stipple above the bottom wave
-                    if _hash2(col + 3, row + 17) > 0.82:
-                        intensity = 0.14 * x_fade
-                        r_col, g_col, b_col = 108, 86, 212
+                    intensity = (0.16 + 0.26 * _fbm(nx * 14.0 + 4.0, ny * 14.0)) * x_fade * 0.50
+                    r_col, g_col, b_col = (int(b_pal[0] * 0.78), int(b_pal[1] * 0.78), int(b_pal[2] * 0.88))
 
             if intensity <= 0.05:
                 continue
@@ -477,18 +678,153 @@ def _render_ascii_backdrop(width: int = 1400, height: int = 788, theme: str = "m
 
     base = Image.alpha_composite(base, ascii_layer)
 
-    # 4. Gentle dark readability scrim behind right-side stats numbers so text always pops
     scrim = Image.new("RGBA", (width, height), (0, 0, 0, 0))
     sdraw = ImageDraw.Draw(scrim)
-    sdraw.rectangle((int(width * 0.52), int(height * 0.62), int(width * 0.96), int(height * 0.90)), fill=(6, 11, 22, 95))
+    sdraw.rectangle((int(width * 0.52), int(height * 0.62), int(width * 0.96), int(height * 0.90)), fill=(*bot_rgb, 95))
     scrim = scrim.filter(ImageFilter.GaussianBlur(radius=30))
     base = Image.alpha_composite(base, scrim)
 
-    # Hairline outer card border
     bdraw = ImageDraw.Draw(base)
-    bdraw.rounded_rectangle((1, 1, width - 2, height - 2), radius=16, outline=(36, 58, 96, 185), width=2)
+    bdraw.rounded_rectangle((1, 1, width - 2, height - 2), radius=16, outline=(*border_rgb, 185), width=2)
 
     _backdrop_cache[cache_key] = base
+    return base.copy()
+
+
+def _render_splash_ascii_backdrop(
+    width: int,
+    height: int,
+    splash_img: Optional[Image.Image],
+    cache_tag: str,
+    fallback_theme: str = "citadel",
+    tint_rgb: Optional[tuple[int, int, int]] = None,
+) -> Image.Image:
+    """Converts an official Riot champion splash art into a glowing colored ASCII backdrop."""
+    if splash_img is None:
+        return _render_ascii_backdrop(width, height, theme=fallback_theme)
+
+    cache_key = (width, height, f"splash:{cache_tag}:{tint_rgb}")
+    if cache_key in _splash_backdrop_cache:
+        return _splash_backdrop_cache[cache_key].copy()
+
+    # 1. Base midnight canvas
+    base = Image.new("RGBA", (width, height), (6, 10, 20, 255))
+    bg_draw = ImageDraw.Draw(base)
+    for y in range(height):
+        t = 1.0 - y / height
+        bg_draw.line([(0, y), (width, y)], fill=(int(5 + 6 * t), int(10 + 11 * t), int(20 + 20 * t), 255))
+
+    # 2. Frame splash art across the right 82% of the card, enhanced for crisp ASCII readability
+    cell_w, cell_h = 6, 9
+    cols = width // cell_w
+    rows = height // cell_h
+
+    src = splash_img.convert("RGB")
+    src = ImageEnhance.Contrast(src).enhance(1.38)
+    src = ImageEnhance.Color(src).enhance(1.25)
+
+    # Fit height to card height, anchor toward right side where Riot splash art focuses the champ
+    sw, sh = src.size
+    target_h = rows
+    target_w = max(cols, int(round(sw * (target_h / max(1, sh)) * (cell_h / cell_w))))
+    resized = src.resize((target_w, target_h), Image.Resampling.BILINEAR)
+
+    # Align right edge of splash with right edge of card
+    x_offset = max(0, target_w - cols)
+    cropped = resized.crop((x_offset, 0, x_offset + cols, target_h))
+    pixels = list(cropped.getdata())
+
+    # Soft ambient aura from splash average right-side color (or optional Victory/Defeat tint)
+    glow = Image.new("RGBA", (width, height), (0, 0, 0, 0))
+    gdraw = ImageDraw.Draw(glow)
+    sample_r = sample_g = sample_b = 0
+    sample_n = 0
+    for r_i in range(0, rows // 2, 3):
+        for c_i in range(cols // 2, cols, 3):
+            pr, pg, pb = pixels[r_i * cols + c_i]
+            sample_r += pr
+            sample_g += pg
+            sample_b += pb
+            sample_n += 1
+    avg_rgb = (
+        (sample_r // max(1, sample_n), sample_g // max(1, sample_n), sample_b // max(1, sample_n))
+        if sample_n
+        else (86, 168, 255)
+    )
+    if tint_rgb:
+        avg_rgb = (
+            int(avg_rgb[0] * 0.55 + tint_rgb[0] * 0.45),
+            int(avg_rgb[1] * 0.55 + tint_rgb[1] * 0.45),
+            int(avg_rgb[2] * 0.55 + tint_rgb[2] * 0.45),
+        )
+    gdraw.ellipse((int(width * 0.42), -int(height * 0.15), int(width * 1.05), int(height * 0.72)), fill=(*avg_rgb, 62))
+    glow = glow.filter(ImageFilter.GaussianBlur(radius=54))
+    base = Image.alpha_composite(base, glow)
+
+    # 3. Render ASCII matrix sampled directly from splash pixels
+    ascii_layer = Image.new("RGBA", (width, height), (0, 0, 0, 0))
+    adraw = ImageDraw.Draw(ascii_layer)
+    ascii_font = _font(8, weight="Regular", mono=True)
+    ramp = " .:-=+*#%@08MW"
+    ramp_len = len(ramp) - 1
+
+    for row in range(rows):
+        py = row * cell_h
+        ny = py / height
+        row_off = row * cols
+
+        for col in range(cols):
+            px = col * cell_w
+            nx = px / width
+
+            # Keep left header (avatar + name + subtitle) 100% crisp; bloom splash across the right 65%
+            left_fade = min(1.0, max(0.0, (nx - 0.34) / 0.24))
+            if left_fade <= 0.01:
+                continue
+
+            pr, pg, pb = pixels[row_off + col]
+            lum = (0.299 * pr + 0.587 * pg + 0.114 * pb) / 255.0
+
+            # Showcase champion brightly in upper-right, softly attenuated behind lower stats
+            zone_weight = 1.08 if ny <= 0.42 else (0.42 + 0.30 * max(0.0, (nx - 0.52) / 0.48))
+            intensity = min(1.0, lum * left_fade * zone_weight)
+
+            if intensity <= 0.065:
+                continue
+
+            # Blend splash RGB slightly toward luminous cyan/tint so dark hues still glow cleanly
+            r_col = min(255, int(pr * 0.85 + 32))
+            g_col = min(255, int(pg * 0.85 + 38))
+            b_col = min(255, int(pb * 0.88 + 52))
+            if tint_rgb:
+                r_col = int(r_col * 0.78 + tint_rgb[0] * 0.22)
+                g_col = int(g_col * 0.78 + tint_rgb[1] * 0.22)
+                b_col = int(b_col * 0.78 + tint_rgb[2] * 0.22)
+
+            ch_idx = min(ramp_len, max(1, int(min(1.0, lum * 1.15) * ramp_len)))
+            alpha = int(min(238, max(28, intensity * 240)))
+            adraw.text((px, py), ramp[ch_idx], font=ascii_font, fill=(r_col, g_col, b_col, alpha))
+
+    base = Image.alpha_composite(base, ascii_layer)
+
+    # 4. Smooth dark scrim over stat-heavy areas so foreground text stays effortless to read
+    scrim = Image.new("RGBA", (width, height), (0, 0, 0, 0))
+    sdraw = ImageDraw.Draw(scrim)
+    sdraw.rectangle((0, int(height * 0.36), width, height), fill=(6, 10, 20, 118))
+    scrim = scrim.filter(ImageFilter.GaussianBlur(radius=34))
+    base = Image.alpha_composite(base, scrim)
+
+    border_col = (
+        min(255, max(42, avg_rgb[0])),
+        min(255, max(58, avg_rgb[1])),
+        min(255, max(92, avg_rgb[2])),
+    )
+    bdraw = ImageDraw.Draw(base)
+    bdraw.rounded_rectangle((1, 1, width - 2, height - 2), radius=16, outline=(*border_col, 170), width=2)
+
+    if len(_splash_backdrop_cache) >= _MAX_SPLASH_CACHE:
+        _splash_backdrop_cache.pop(next(iter(_splash_backdrop_cache)))
+    _splash_backdrop_cache[cache_key] = base
     return base.copy()
 
 
@@ -675,16 +1011,23 @@ async def render_player_card(
     c1, c2 = TIER_ACCENTS.get((ps.solo_tier or "UNRANKED").upper(), TIER_ACCENTS["UNRANKED"])
     top_champs = ps.top_champions_detailed
 
-    # Fetch all remote icons concurrently
+    # Fetch all remote icons + #1 champion splash concurrently
+    top_champ_name = top_champs[0]["name"] if top_champs else None
     profile_task = assets.get_profile_icon(ps.profile_icon_id)
     emblem_task = assets.get_rank_emblem(ps.solo_tier)
+    splash_task = assets.get_champion_splash(top_champ_name) if top_champ_name else asyncio.sleep(0, result=None)
     champ_tasks = [assets.get_champion_icon(c["name"]) for c in top_champs]
-    fetched = await asyncio.gather(profile_task, emblem_task, *champ_tasks)
+    fetched = await asyncio.gather(profile_task, emblem_task, splash_task, *champ_tasks)
     profile_img = fetched[0]
     emblem_img = fetched[1]
-    champ_imgs = fetched[2:]
+    splash_img = fetched[2]
+    champ_imgs = fetched[3:]
 
-    canvas = _render_ascii_backdrop(W, H)
+    canvas = (
+        _render_splash_ascii_backdrop(W, H, splash_img, top_champ_name or "default", fallback_theme="citadel")
+        if splash_img is not None
+        else _render_ascii_backdrop(W, H, theme="citadel")
+    )
     d = ImageDraw.Draw(canvas)
 
     # --- Header: Circular Avatar + Name + Subtitle ---
@@ -843,7 +1186,7 @@ async def render_versus_card(a, b, assets: AssetCache) -> io.BytesIO:
         assets.get_rank_emblem(b.solo_tier),
     )
 
-    canvas = _render_ascii_backdrop(W, H)
+    canvas = _render_ascii_backdrop(W, H, theme="crimson")
     d = ImageDraw.Draw(canvas)
 
     # Left player header
@@ -947,11 +1290,17 @@ async def render_match_card(
     role: str = "",
 ) -> io.BytesIO:
     W, H = 1400, 620
-    champ_img = await assets.get_champion_icon(champion)
+    champ_img, splash_img = await asyncio.gather(
+        assets.get_champion_icon(champion),
+        assets.get_champion_splash(champion),
+    )
     item_ids = (item_ids or [])[:6]
     item_imgs = await asyncio.gather(*[assets.get_item_icon(iid) for iid in item_ids]) if item_ids else []
 
-    canvas = _render_ascii_backdrop(W, H)
+    tint = (76, 232, 162) if win else (246, 94, 114)
+    canvas = _render_splash_ascii_backdrop(
+        W, H, splash_img, champion, fallback_theme="cosmic" if win else "crimson", tint_rgb=tint
+    )
     d = ImageDraw.Draw(canvas)
 
     ring1, ring2 = ((68, 232, 152), (56, 192, 255)) if win else ((255, 98, 114), (192, 68, 134))
@@ -1141,21 +1490,23 @@ async def render_build_card(
 
     situational = [s for s in build.get("situational", [])[:3] if s.get("item")]
 
-    # Fetch all icons concurrently
+    # Fetch all icons + champion splash concurrently
     champ_task = assets.get_champion_icon(champion)
+    splash_task = assets.get_champion_splash(champion)
     enemy_tasks = [assets.get_champion_icon(e) for e in enemies]
     main_item_tasks = [assets.get_item_icon(item_ids.get(name) or 0) for _, name, _ in main_steps]
     sit_item_tasks = [assets.get_item_icon(item_ids.get(s["item"]) or 0) for s in situational]
 
-    all_fetched = await asyncio.gather(champ_task, *enemy_tasks, *main_item_tasks, *sit_item_tasks)
+    all_fetched = await asyncio.gather(champ_task, splash_task, *enemy_tasks, *main_item_tasks, *sit_item_tasks)
     champ_img = all_fetched[0]
-    p1 = 1 + len(enemies)
+    splash_img = all_fetched[1]
+    p1 = 2 + len(enemies)
     p2 = p1 + len(main_steps)
-    enemy_imgs = all_fetched[1:p1]
+    enemy_imgs = all_fetched[2:p1]
     main_item_imgs = all_fetched[p1:p2]
     sit_item_imgs = all_fetched[p2:]
 
-    canvas = _render_ascii_backdrop(W, H)
+    canvas = _render_splash_ascii_backdrop(W, H, splash_img, champion, fallback_theme="zaun")
     d = ImageDraw.Draw(canvas)
 
     def _wrap_text(text: str, max_chars: int, max_lines: int) -> list[str]:
@@ -1343,7 +1694,7 @@ async def render_scout_card(scout: dict, assets: AssetCache) -> io.BytesIO:
     c_imgs = fetched[: len(all_players)]
     e_imgs = fetched[len(all_players) :]
 
-    canvas = _render_ascii_backdrop(W, H)
+    canvas = _render_ascii_backdrop(W, H, theme="zaun")
     d = ImageDraw.Draw(canvas)
 
     mins = max(0, scout.get("length_seconds", 0)) // 60
@@ -1414,10 +1765,10 @@ async def render_debrief_card(debrief: dict, assets: AssetCache) -> io.BytesIO:
     members = debrief.get("members", [])[:4]
     champ_imgs = await asyncio.gather(*[assets.get_champion_icon(m["record"].champion) for m in members])
 
-    canvas = _render_ascii_backdrop(W, H)
+    win = bool(debrief.get("win"))
+    canvas = _render_ascii_backdrop(W, H, theme="cosmic" if win else "crimson")
     d = ImageDraw.Draw(canvas)
 
-    win = bool(debrief.get("win"))
     res_txt = "SQUAD VICTORY" if win else "SQUAD DEFEAT"
     res_col = (88, 240, 158, 255) if win else (255, 110, 118, 255)
     mins, secs = divmod(debrief.get("duration_seconds", 0), 60)
@@ -1515,7 +1866,7 @@ async def render_pool_card(ps, pool: dict, assets: AssetCache, days: int = 30) -
     prof_img = fetched[0]
     champ_img_map = dict(zip(champ_names, fetched[1:]))
 
-    canvas = _render_ascii_backdrop(W, H)
+    canvas = _render_ascii_backdrop(W, H, theme="ionia")
     d = ImageDraw.Draw(canvas)
 
     _paste_circular_portrait(canvas, prof_img, (116, 112), 112, (92, 224, 255), (186, 116, 255), 4, ps.display_name)
@@ -1579,7 +1930,7 @@ async def render_coach_card(ps, split: dict, assets: AssetCache, days: int = 14)
         assets.get_rank_emblem(ps.solo_tier),
     )
 
-    canvas = _render_ascii_backdrop(W, H)
+    canvas = _render_ascii_backdrop(W, H, theme="ionia")
     d = ImageDraw.Draw(canvas)
 
     _paste_circular_portrait(canvas, prof_img, (118, 116), 114, (92, 224, 255), (186, 116, 255), 4, ps.display_name)
@@ -1654,7 +2005,7 @@ async def render_synergy_card(synergy: dict, assets: AssetCache) -> io.BytesIO:
     fetched_icons = await asyncio.gather(*[assets.get_profile_icon(icon_ids[n]) for n in names]) if names else []
     icon_map = dict(zip(names, fetched_icons))
 
-    canvas = _render_ascii_backdrop(W, H)
+    canvas = _render_ascii_backdrop(W, H, theme="ionia")
     d = ImageDraw.Draw(canvas)
 
     days = synergy.get("days", 7)
@@ -1744,14 +2095,17 @@ async def render_synergy_card(synergy: dict, assets: AssetCache) -> io.BytesIO:
 async def render_mastery_card(mastery: dict, assets: AssetCache) -> io.BytesIO:
     W, H = 1400, 820
     items = mastery.get("masteries", [])[:10]
+    top_main = items[0]["name"] if items else None
     fetched = await asyncio.gather(
         assets.get_profile_icon(mastery.get("profile_icon_id", 0)),
+        assets.get_champion_splash(top_main) if top_main else asyncio.sleep(0, result=None),
         *[assets.get_champion_icon(m["name"]) for m in items],
     )
     prof_img = fetched[0]
-    champ_imgs = fetched[1:]
+    splash_img = fetched[1]
+    champ_imgs = fetched[2:]
 
-    canvas = _render_ascii_backdrop(W, H)
+    canvas = _render_splash_ascii_backdrop(W, H, splash_img, top_main or "mastery", fallback_theme="shurima")
     d = ImageDraw.Draw(canvas)
 
     _paste_circular_portrait(canvas, prof_img, (116, 112), 112, (236, 192, 92), (92, 224, 255), 4, mastery["display_name"])
@@ -1810,7 +2164,7 @@ async def render_damage_card(stats: list, assets: AssetCache) -> io.BytesIO:
 
     icons = await asyncio.gather(*[assets.get_profile_icon(p.profile_icon_id) for p in ordered])
 
-    canvas = _render_ascii_backdrop(W, H)
+    canvas = _render_ascii_backdrop(W, H, theme="crimson")
     d = ImageDraw.Draw(canvas)
 
     group_total = sum(p.total_damage_to_champions for p in active)
@@ -1877,7 +2231,7 @@ async def render_rank_change_card(event: dict, assets: AssetCache) -> io.BytesIO
         assets.get_rank_emblem(event.get("new_tier", "UNRANKED")),
     )
 
-    canvas = _render_ascii_backdrop(W, H)
+    canvas = _render_ascii_backdrop(W, H, theme="shurima" if is_promo else "crimson")
     d = ImageDraw.Draw(canvas)
 
     # Radiant halo behind new rank emblem
@@ -1938,7 +2292,7 @@ async def render_goal_card(
     W, H = 1400, 560
     prof_img = await assets.get_profile_icon(profile_icon_id)
 
-    canvas = _render_ascii_backdrop(W, H)
+    canvas = _render_ascii_backdrop(W, H, theme="shurima")
     d = ImageDraw.Draw(canvas)
 
     goal = eval_result["goal"]
@@ -2026,7 +2380,7 @@ async def render_patch_card(
     fetched = await asyncio.gather(*[assets.get_champion_icon(c) for c in unique_champs]) if unique_champs else []
     c_img_map = dict(zip(unique_champs, fetched))
 
-    canvas = _render_ascii_backdrop(W, H)
+    canvas = _render_ascii_backdrop(W, H, theme="zaun")
     d = ImageDraw.Draw(canvas)
 
     def _wrap(text: str, max_chars: int, max_lines: int) -> list[str]:
