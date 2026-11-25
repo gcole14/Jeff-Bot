@@ -1,0 +1,15 @@
+.git
+.env
+.DS_Store
+.wrangler
+.pytest_cache
+venv
+.venv
+__pycache__
+*.pyc
+*.db
+*.db-shm
+*.db-wal
+bot.log
+site
+tests

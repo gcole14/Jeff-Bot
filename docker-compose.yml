@@ -1,0 +1,12 @@
+services:
+  jeff-bot:
+    build: .
+    container_name: jeff-bot
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      - DB_PATH=/data/jeff_bot.db
+    volumes:
+      - ./data:/data
+      - ./.env:/app/.env

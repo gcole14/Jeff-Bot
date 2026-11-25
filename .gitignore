@@ -1,4 +1,6 @@
 .env
+.DS_Store
+.wrangler/
 rank_history.json
 jeff_bot.db
 jeff_bot.db-shm
