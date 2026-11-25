@@ -74,6 +74,21 @@ PATCH_CHECK_INTERVAL_HOURS = int(os.getenv("PATCH_CHECK_INTERVAL_HOURS", "4"))
 DB_PATH = os.getenv("DB_PATH", str(BASE_DIR / "jeff_bot.db"))
 RANK_HISTORY_FILE = os.getenv("RANK_HISTORY_FILE", str(BASE_DIR / "rank_history.json"))
 
+# --- Hybrid Voice / TTS (Desktop 5070 Ti Chatterbox Turbo -> CM3588 Kokoro -> ElevenLabs) ---
+VOICE_ENABLED = os.getenv("VOICE_ENABLED", "true").strip().lower() not in ("0", "false", "no")
+VOICE_WORKER_URL = os.getenv("VOICE_WORKER_URL", "").strip().rstrip("/")          # e.g. http://192.168.1.50:8100
+VOICE_WORKER_TOKEN = os.getenv("VOICE_WORKER_TOKEN", "").strip()
+VOICE_DEFAULT_VOICE = os.getenv("VOICE_DEFAULT_VOICE", "jeff").strip()
+VOICE_FALLBACK_TTS_URL = os.getenv("VOICE_FALLBACK_TTS_URL", "").strip().rstrip("/")  # e.g. http://kokoro:8880
+VOICE_FALLBACK_VOICE = os.getenv("VOICE_FALLBACK_VOICE", "am_adam").strip()
+VOICE_MAX_CHARS = int(os.getenv("VOICE_MAX_CHARS", "450"))
+VOICE_IDLE_MINUTES = int(os.getenv("VOICE_IDLE_MINUTES", "15"))
+
+# Optional cloud TTS fallback (ElevenLabs v4 Turbo)
+ELEVENLABS_API_KEY = os.getenv("ELEVENLABS_API_KEY", "").strip()
+ELEVENLABS_VOICE_ID = os.getenv("ELEVENLABS_VOICE_ID", "").strip()
+ELEVENLABS_MODEL_ID = os.getenv("ELEVENLABS_MODEL_ID", "eleven_v4_turbo").strip()
+
 # --- Data Dragon ---
 DDRAGON_VERSIONS_URL = "https://ddragon.leagueoflegends.com/api/versions.json"
 DDRAGON_CHAMPION_URL = "https://ddragon.leagueoflegends.com/cdn/{version}/data/en_US/champion.json"

@@ -514,3 +514,113 @@ def test_full_pipeline_caching_coaching_scout_debrief_and_embeds(tmp_path):
         assert data[:8] == b"\x89PNG\r\n\x1a\n" and len(data) > 10_000
 
     db.close()
+
+
+def test_tts_cleaning_and_hybrid_failover():
+    from aiohttp import web
+    from tts import HybridTTSClient, clean_text_for_speech
+
+    # Paralinguistic tag preservation for Chatterbox vs stripping for Kokoro/ElevenLabs
+    raw = "**Cookmysock** went 0/8 on `Yasuo` [chuckle]! https://example.com <:kekw:123456>"
+    chatterbox_clean = clean_text_for_speech(raw, keep_paralinguistic=True)
+    kokoro_clean = clean_text_for_speech(raw, keep_paralinguistic=False)
+    assert "[chuckle]" in chatterbox_clean
+    assert "Cookmysock" in chatterbox_clean
+    assert "**" not in chatterbox_clean and "https://" not in chatterbox_clean and "<:kekw:" not in chatterbox_clean
+    assert "[chuckle]" not in kokoro_clean
+
+    # Sentence-boundary truncation
+    long_text = "First sentence is short. Second sentence is also short. Third sentence makes this way too long for comms."
+    clipped = clean_text_for_speech(long_text, max_chars=60)
+    assert len(clipped) <= 60 and clipped.endswith(".")
+
+    async def _run_hybrid_flow():
+        primary_online = {"up": True}
+        seen_primary_texts: list[str] = []
+        seen_fallback_texts: list[str] = []
+
+        async def handle_primary_health(request):
+            if not primary_online["up"]:
+                return web.Response(status=503, text="down")
+            return web.json_response(
+                {"status": "ok", "engine": "chatterbox-turbo", "gpu": "RTX 5070 Ti", "voices": ["jeff", "caster"]}
+            )
+
+        async def handle_primary_voices(request):
+            return web.json_response({"default": "jeff", "voices": ["jeff", "caster"]})
+
+        async def handle_primary_tts(request):
+            if not primary_online["up"]:
+                return web.Response(status=503, text="down")
+            if request.headers.get("Authorization") != "Bearer secret123":
+                return web.Response(status=401, text="unauthorized")
+            data = await request.json()
+            seen_primary_texts.append(data["text"])
+            return web.Response(
+                body=b"RIFFprimary-wav",
+                content_type="audio/wav",
+                headers={"X-TTS-Voice": data.get("voice", "jeff")},
+            )
+
+        async def handle_fallback_health(request):
+            return web.json_response({"status": "ok"})
+
+        async def handle_fallback_tts(request):
+            data = await request.json()
+            seen_fallback_texts.append(data["input"])
+            return web.Response(body=b"RIFFkokoro-wav", content_type="audio/wav")
+
+        p_app = web.Application()
+        p_app.router.add_get("/health", handle_primary_health)
+        p_app.router.add_get("/voices", handle_primary_voices)
+        p_app.router.add_post("/tts", handle_primary_tts)
+
+        f_app = web.Application()
+        f_app.router.add_get("/health", handle_fallback_health)
+        f_app.router.add_post("/v1/audio/speech", handle_fallback_tts)
+
+        p_runner = web.AppRunner(p_app)
+        f_runner = web.AppRunner(f_app)
+        await p_runner.setup()
+        await f_runner.setup()
+        p_site = web.TCPSite(p_runner, "127.0.0.1", 0)
+        f_site = web.TCPSite(f_runner, "127.0.0.1", 0)
+        await p_site.start()
+        await f_site.start()
+
+        p_port = p_site._server.sockets[0].getsockname()[1]
+        f_port = f_site._server.sockets[0].getsockname()[1]
+
+        client = HybridTTSClient(
+            worker_url=f"http://127.0.0.1:{p_port}",
+            worker_token="secret123",
+            default_voice="jeff",
+            fallback_url=f"http://127.0.0.1:{f_port}",
+            fallback_voice="am_adam",
+            elevenlabs_api_key="",
+            elevenlabs_voice_id="",
+        )
+        try:
+            # 1. Primary online -> routes to Desktop GPU & keeps [laugh]
+            st = await client.get_status()
+            assert st["primary"]["ok"] is True
+            assert st["voices"] == ["jeff", "caster"]
+
+            r1 = await client.synthesize("Nice flash [laugh] bro!")
+            assert r1 is not None and r1.backend == "desktop_gpu"
+            assert r1.audio_bytes == b"RIFFprimary-wav"
+            assert "[laugh]" in seen_primary_texts[0]
+
+            # 2. Primary goes down -> seamlessly fails over to CM3588 Kokoro & strips [laugh]
+            primary_online["up"] = False
+            r2 = await client.synthesize("Still inting [laugh] somehow.")
+            assert r2 is not None and r2.backend == "cm3588_kokoro"
+            assert r2.audio_bytes == b"RIFFkokoro-wav"
+            assert "[laugh]" not in seen_fallback_texts[0]
+        finally:
+            await client.close()
+            await p_runner.cleanup()
+            await f_runner.cleanup()
+
+    asyncio.run(_run_hybrid_flow())
+

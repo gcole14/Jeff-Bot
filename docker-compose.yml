@@ -10,3 +10,14 @@ services:
     volumes:
       - ./data:/data
       - ./.env:/app/.env
+
+  # Optional 24/7 CM3588 fallback TTS (Kokoro-82M) when your Windows 5070 Ti PC is off.
+  # Start with: docker compose --profile kokoro up -d
+  # Then set VOICE_FALLBACK_TTS_URL=http://kokoro:8880 in .env
+  kokoro:
+    image: ghcr.io/remsky/kokoro-fastapi-cpu:latest
+    container_name: jeff-kokoro
+    profiles: ["kokoro"]
+    restart: unless-stopped
+    ports:
+      - "8880:8880"

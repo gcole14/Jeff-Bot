@@ -87,6 +87,8 @@ from embeds import (
 from patch_notes import PatchNotesFetcher
 from riot_api import RiotAPI
 from stats import StatsAggregator, RankTracker, resolve_riot_id
+from tts import HybridTTSClient
+from voice import VoiceManager, check_voice_prereqs
 
 logging.basicConfig(
     level=logging.INFO,
@@ -127,6 +129,8 @@ patch_fetcher = PatchNotesFetcher()
 deepseek = DeepSeekClient()
 aggregator = StatsAggregator(riot, db)
 rank_tracker = RankTracker(aggregator, db)
+tts_client = HybridTTSClient()
+voice_manager = VoiceManager(tts_client)
 scheduler = AsyncIOScheduler(timezone=TIMEZONE)
 
 
@@ -139,6 +143,7 @@ class JeffBot(commands.Bot):
     async def close(self) -> None:
         if scheduler.running:
             scheduler.shutdown(wait=False)
+        await voice_manager.close()
         await assets.close()
         await patch_fetcher.close()
         await riot.close()
@@ -256,6 +261,9 @@ async def check_rank_changes() -> None:
                 content=content,
                 file=discord.File(card_buf, filename=f"{event['display_name']}_rank.png"),
             )
+            if commentary:
+                guild_id = getattr(getattr(channel, "guild", None), "id", None)
+                voice_manager.speak_if_connected(guild_id, commentary)
         logger.info(f"Posted {len(events)} rank change alert(s).")
     except Exception as e:
         logger.exception(f"Rank change check failed: {e}")
@@ -279,6 +287,9 @@ async def check_squad_debriefs() -> None:
                 content=content,
                 file=discord.File(card_buf, filename=f"squad_debrief_{debrief['match_id']}.png"),
             )
+            if commentary:
+                guild_id = getattr(getattr(channel, "guild", None), "id", None)
+                voice_manager.speak_if_connected(guild_id, commentary)
             db.mark_match_announced(debrief["match_id"])
             logger.info(f"Posted auto squad debrief for {debrief['match_id']}.")
     except Exception as e:
@@ -433,6 +444,15 @@ async def on_ready():
     if PATCH_CHECK_ENABLED:
         asyncio.create_task(check_new_patch())
     bot._setup_done = True
+
+
+@bot.event
+async def on_voice_state_update(
+    member: discord.Member,
+    before: discord.VoiceState,
+    after: discord.VoiceState,
+):
+    await voice_manager.handle_voice_state_update(member, before, after)
 
 
 # -------------------------------------------------------------------------
@@ -1032,6 +1052,7 @@ async def slash_scout(interaction: discord.Interaction, player: str):
             )
             gp_embed.set_footer(text="Powered by DeepSeek • Run /build for full item path card")
             await interaction.followup.send(file=file, embed=gp_embed)
+            voice_manager.speak_if_connected(interaction.guild_id, gameplan)
         else:
             await interaction.followup.send(file=file)
     except Exception as e:
@@ -1056,6 +1077,8 @@ async def slash_debrief(interaction: discord.Interaction):
             content=content,
             file=discord.File(card_buf, filename=f"squad_debrief_{latest['match_id']}.png"),
         )
+        if commentary:
+            voice_manager.speak_if_connected(interaction.guild_id, commentary)
     except Exception as e:
         await interaction.followup.send(f"❌ Squad debrief failed: {e}")
 
@@ -1100,6 +1123,7 @@ async def slash_ask(interaction: discord.Interaction, question: str):
         await interaction.followup.send(
             embed=build_ask_embed(question, answer, interaction.user.display_name)
         )
+        voice_manager.speak_if_connected(interaction.guild_id, answer)
     except Exception as e:
         await interaction.followup.send(f"❌ Ask failed: {e}")
 
@@ -1130,6 +1154,7 @@ async def slash_roast(interaction: discord.Interaction, player: str):
             await interaction.followup.send("❌ DeepSeek didn't return a roast — check bot logs.")
             return
         await interaction.followup.send(embed=build_ai_embed(ps, roast, mode="roast"))
+        voice_manager.speak_if_connected(interaction.guild_id, roast)
     except Exception as e:
         await interaction.followup.send(f"❌ Roast failed: {e}")
 
@@ -1278,6 +1303,225 @@ bot.tree.add_command(roster_group)
 
 
 # -------------------------------------------------------------------------
+# Hybrid Voice Command Group (/voice)
+# -------------------------------------------------------------------------
+
+voice_group = app_commands.Group(
+    name="voice",
+    description="Let Jeff join voice chat and talk using your Desktop GPU / CM3588 hybrid TTS",
+)
+
+
+async def voice_name_autocomplete(
+    interaction: discord.Interaction, current: str
+) -> list[app_commands.Choice[str]]:
+    voices = await tts_client.list_voices()
+    q = current.lower().strip()
+    matches = [v for v in voices if not q or q in v.lower()]
+    return [app_commands.Choice(name=v, value=v) for v in matches[:25]]
+
+
+@voice_group.command(name="join", description="Bring Jeff Bot into your current voice channel")
+async def voice_join(interaction: discord.Interaction):
+    user_voice = getattr(interaction.user, "voice", None)
+    if not user_voice or not user_voice.channel:
+        await interaction.response.send_message(
+            "❌ Hop into a voice channel first, then run `/voice join`.",
+            ephemeral=True,
+        )
+        return
+    await interaction.response.defer()
+    ok, msg = await voice_manager.join(user_voice.channel)
+    if not ok:
+        await interaction.followup.send(f"❌ {msg}")
+        return
+
+    status = await tts_client.get_status()
+    backend_label = status["active_backend"]
+    await interaction.followup.send(
+        f"🎙️ {msg}\n"
+        f"**Active TTS:** {backend_label} • **Voice:** `{tts_client.active_voice}` • "
+        f"**Auto-speak:** {'ON' if voice_manager.auto_speak else 'OFF'}"
+    )
+    if tts_client.has_any_backend and interaction.guild_id:
+        greeting = (
+            "Yo, Jeff is in the call. [chuckle] Don't feed."
+            if tts_client.primary_supports_tags
+            else "Yo, Jeff is in the call. Don't feed."
+        )
+        voice_manager.speak_if_connected(interaction.guild_id, greeting)
+
+
+@voice_group.command(name="leave", description="Disconnect Jeff Bot from voice chat")
+async def voice_leave(interaction: discord.Interaction):
+    if not interaction.guild_id:
+        await interaction.response.send_message("❌ Run this inside a server.", ephemeral=True)
+        return
+    ok, msg = await voice_manager.leave(interaction.guild_id)
+    prefix = "👋" if ok else "ℹ️"
+    await interaction.response.send_message(f"{prefix} {msg}")
+
+
+@voice_group.command(name="say", description="Make Jeff say something out loud in voice chat")
+@app_commands.describe(
+    text="What Jeff should say (Chatterbox supports [laugh], [chuckle], [sigh])",
+    voice="Optional cloned voice clip name from your desktop voice_worker/voices/ folder",
+)
+@app_commands.autocomplete(voice=voice_name_autocomplete)
+async def voice_say(interaction: discord.Interaction, text: str, voice: Optional[str] = None):
+    if not interaction.guild_id:
+        await interaction.response.send_message("❌ Run this inside a server.", ephemeral=True)
+        return
+    await interaction.response.defer()
+
+    if not voice_manager.is_connected(interaction.guild_id):
+        user_voice = getattr(interaction.user, "voice", None)
+        if not user_voice or not user_voice.channel:
+            await interaction.followup.send("❌ Jeff isn't in a voice channel—join one first or run `/voice join`.")
+            return
+        ok, msg = await voice_manager.join(user_voice.channel)
+        if not ok:
+            await interaction.followup.send(f"❌ {msg}")
+            return
+
+    if not tts_client.has_any_backend:
+        await interaction.followup.send(
+            "⚠️ No TTS backend is configured yet. Set `VOICE_WORKER_URL`, `VOICE_FALLBACK_TTS_URL`, or `ELEVENLABS_API_KEY` in `.env`."
+        )
+        return
+
+    res = await voice_manager.speak(interaction.guild_id, text, voice=voice)
+    if not res:
+        await interaction.followup.send("❌ All configured TTS backends are unreachable right now — run `/voice status`.")
+        return
+
+    await interaction.followup.send(
+        f"🗣️ *\"{text[:200]}\"*\n"
+        f"`{res.backend}` • voice `{res.voice}` • `{res.latency_ms}ms`"
+    )
+
+
+@voice_group.command(name="ask", description="Ask Jeff a quick question and hear his spoken reply in VC")
+@app_commands.describe(question="Question for Jeff (e.g. 'Who is inting the hardest this week?')")
+async def voice_ask(interaction: discord.Interaction, question: str):
+    if not deepseek.is_configured:
+        await interaction.response.send_message(
+            "⚠️ DeepSeek AI is not configured yet (`DEEPSEEK_API_KEY`).",
+            ephemeral=True,
+        )
+        return
+    if not interaction.guild_id:
+        await interaction.response.send_message("❌ Run this inside a server.", ephemeral=True)
+        return
+
+    await interaction.response.defer()
+    if not voice_manager.is_connected(interaction.guild_id):
+        user_voice = getattr(interaction.user, "voice", None)
+        if user_voice and user_voice.channel:
+            await voice_manager.join(user_voice.channel)
+
+    try:
+        context = await aggregator.build_squad_context(days=14)
+        reply = await deepseek.answer_voice_question(
+            question,
+            context,
+            interaction.user.display_name,
+            allow_paralinguistic=tts_client.primary_supports_tags,
+        )
+        if not reply:
+            await interaction.followup.send("❌ DeepSeek didn't answer — check bot logs.")
+            return
+
+        res = (
+            await voice_manager.speak(interaction.guild_id, reply)
+            if voice_manager.is_connected(interaction.guild_id)
+            else None
+        )
+        embed = build_ask_embed(question, reply, interaction.user.display_name)
+        if res:
+            embed.set_footer(text=f"Spoken via {res.backend} ({res.voice}) in {res.latency_ms}ms")
+        await interaction.followup.send(embed=embed)
+    except Exception as e:
+        await interaction.followup.send(f"❌ Voice ask failed: {e}")
+
+
+@voice_group.command(name="set", description="Switch Jeff's active cloned voice")
+@app_commands.describe(voice="Voice name (filename stem in voice_worker/voices/)")
+@app_commands.autocomplete(voice=voice_name_autocomplete)
+async def voice_set(interaction: discord.Interaction, voice: str):
+    cleaned = voice.strip().lower()
+    if not cleaned:
+        await interaction.response.send_message("❌ Provide a voice name.", ephemeral=True)
+        return
+    tts_client.active_voice = cleaned
+    await interaction.response.send_message(f"🎛️ Switched Jeff's voice to **`{cleaned}`**!")
+
+
+@voice_group.command(name="autospeak", description="Toggle whether Jeff automatically speaks /scout, /roast, /debrief & /ask in VC")
+@app_commands.describe(enabled="True to auto-speak while connected to VC, False for /voice say & /voice ask only")
+async def voice_autospeak(interaction: discord.Interaction, enabled: bool):
+    voice_manager.auto_speak = enabled
+    state_str = "ON — Jeff will speak `/scout`, `/roast`, `/debrief`, and `/ask` while in VC." if enabled else "OFF — Jeff will only speak on `/voice say` and `/voice ask`."
+    await interaction.response.send_message(f"🔊 Auto-speak is now **{state_str}**")
+
+
+@voice_group.command(name="status", description="Show hybrid voice backend health (5070 Ti GPU vs CM3588 fallback)")
+async def voice_status(interaction: discord.Interaction):
+    await interaction.response.defer(ephemeral=True)
+    prereqs_ok, missing = check_voice_prereqs()
+    st = await tts_client.get_status()
+    ch = voice_manager.connected_channel(interaction.guild_id) if interaction.guild_id else None
+
+    embed = discord.Embed(
+        title="🎙️ Jeff Bot Hybrid Voice Status",
+        color=0x22C55E if st["active_backend"] != "None online" and prereqs_ok else 0xC89B3C,
+    )
+    embed.add_field(
+        name="Voice Channel",
+        value=f"🟢 Connected to **{ch.name}**" if ch else "⚪ Not connected (`/voice join`)",
+        inline=True,
+    )
+    embed.add_field(
+        name="Active Route",
+        value=f"**{st['active_backend']}**\nVoice: `{st['active_voice']}` • Auto-speak: `{'ON' if voice_manager.auto_speak else 'OFF'}`",
+        inline=True,
+    )
+    p = st["primary"]
+    f = st["fallback"]
+    el = st["elevenlabs"]
+    embed.add_field(
+        name="Backends (Failover Order)",
+        value=(
+            f"1. **Desktop GPU:** {'✅' if p['ok'] else ('⚪' if not p['configured'] else '🔴')} {p['detail']}\n"
+            f"2. **CM3588 Kokoro:** {'✅' if f['ok'] else ('⚪' if not f['configured'] else '🔴')} {f['detail']}\n"
+            f"3. **ElevenLabs:** {'✅' if el['ok'] else '⚪'} {el['detail']}"
+        ),
+        inline=False,
+    )
+    if st["voices"]:
+        embed.add_field(
+            name="Cloned Voices Available",
+            value=", ".join(f"`{v}`" for v in st["voices"]),
+            inline=False,
+        )
+    if not prereqs_ok:
+        embed.add_field(
+            name="⚠️ Missing Voice Dependencies",
+            value="\n".join(f"• {m}" for m in missing),
+            inline=False,
+        )
+    last = st.get("last_result")
+    if last:
+        embed.set_footer(
+            text=f"Last line: {last['backend']} ({last['voice']}) in {last['latency_ms']}ms • Session total: {st['total_chars_spoken']} chars"
+        )
+    await interaction.followup.send(embed=embed, ephemeral=True)
+
+
+bot.tree.add_command(voice_group)
+
+
+# -------------------------------------------------------------------------
 # Ops & Help Commands
 # -------------------------------------------------------------------------
 
@@ -1307,9 +1551,10 @@ async def slash_setriotkey(interaction: discord.Interaction, key: str):
 @bot.tree.command(name="status", description="Check Jeff Bot health, API keys, and schedule")
 async def slash_status(interaction: discord.Interaction):
     await interaction.response.defer(ephemeral=True)
-    (riot_ok, riot_msg), (ai_ok, ai_msg) = await asyncio.gather(
+    (riot_ok, riot_msg), (ai_ok, ai_msg), voice_st = await asyncio.gather(
         riot.verify_key(),
         deepseek.verify_key(),
+        tts_client.get_status(),
     )
     next_runs = []
     for job in scheduler.get_jobs():
@@ -1319,11 +1564,16 @@ async def slash_status(interaction: discord.Interaction):
     channel = bot.get_channel(CHANNEL_ID) if CHANNEL_ID else None
     channel_label = f"#{channel.name}" if channel and hasattr(channel, "name") else (str(CHANNEL_ID) if CHANNEL_ID else "Not set")
 
+    prereqs_ok, _ = check_voice_prereqs()
+    voice_icon = "✅" if (prereqs_ok and voice_st["active_backend"] != "None online") else "⚪"
+    voice_msg = f"{voice_icon} {voice_st['active_backend']} (voice: `{voice_st['active_voice']}`)"
+
     embed = build_status_embed({
         "riot_ok": riot_ok,
         "riot_msg": riot_msg,
         "ai_ok": ai_ok,
         "ai_msg": ai_msg,
+        "voice_msg": voice_msg,
         "roster": aggregator.get_roster(),
         "cached_matches": db.count_cached_matches(),
         "channel_label": channel_label,
@@ -1379,6 +1629,15 @@ async def slash_help(interaction: discord.Interaction):
             "`/synergy [days]` — Win rates together vs. solo & duo pairs\n"
             "`/versus player1 player2` — 7-day head-to-head\n"
             "`/damage` • `/live` • `/mastery player`"
+        ),
+        inline=False,
+    )
+    embed.add_field(
+        name="🎙️ Hybrid Voice",
+        value=(
+            "`/voice join` • `/voice leave` — Bring Jeff into your voice channel\n"
+            "`/voice say text [voice]` • `/voice ask question` — Make Jeff talk or answer on mic\n"
+            "`/voice set voice` • `/voice autospeak` • `/voice status` — Swap cloned voices & check GPU/fallback"
         ),
         inline=False,
     )
@@ -1439,6 +1698,12 @@ async def run_preflight_check() -> int:
 
     print(f"\n[OK]   SQLite DB: {DB_PATH} ({db.count_cached_matches()} cached matches)")
 
+    prereqs_ok, missing = check_voice_prereqs()
+    voice_st = await tts_client.get_status()
+    v_tag = "OK" if (prereqs_ok and voice_st["active_backend"] != "None online") else "INFO"
+    print(f"[{v_tag}]   Voice / TTS: {voice_st['active_backend']} (prereqs: {'ready' if prereqs_ok else ', '.join(missing)})")
+
+    await tts_client.close()
     await riot.close()
     await deepseek.close()
     db.close()

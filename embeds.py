@@ -987,6 +987,12 @@ def build_status_embed(status: dict) -> discord.Embed:
         value=f"{'✅' if status['ai_ok'] else '⚪'} {status['ai_msg']}",
         inline=False,
     )
+    if status.get("voice_msg"):
+        embed.add_field(
+            name="Voice / TTS",
+            value=status["voice_msg"],
+            inline=False,
+        )
     embed.add_field(
         name="Tracked Squad",
         value=", ".join(status["roster"]) or "(empty)",

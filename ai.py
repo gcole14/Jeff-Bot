@@ -308,6 +308,29 @@ class DeepSeekClient:
         )
         return await self._chat(COACH_SYSTEM_PROMPT, prompt, max_tokens=340, temperature=0.6)
 
+    async def answer_voice_question(
+        self,
+        question: str,
+        squad_context: str,
+        asker: str,
+        allow_paralinguistic: bool = False,
+    ) -> Optional[str]:
+        """Short, natural spoken reply designed for Discord voice comms."""
+        tag_hint = (
+            " You may optionally use a single natural tag like [chuckle] or [laugh] if roasting or joking."
+            if allow_paralinguistic
+            else ""
+        )
+        prompt = (
+            f"You are on Discord voice comms with your friends while they play League. "
+            f"'{asker}' just asked you: {question}\n\n"
+            f"Squad tracked data:\n{squad_context}\n\n"
+            "Reply in 1 to 3 short, conversational spoken sentences (under 55 words total). "
+            "No markdown, no bullet points, no emojis—write exactly how you would say it out loud on mic."
+            f"{tag_hint}"
+        )
+        return await self._chat(JEFF_SYSTEM_PROMPT, prompt, max_tokens=140, temperature=0.75)
+
     # -------------------------------------------------------------------------
     # 6. Adaptive Build Recommender (/build)
     # -------------------------------------------------------------------------
