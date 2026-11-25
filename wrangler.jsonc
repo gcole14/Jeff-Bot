@@ -1,0 +1,13 @@
+{
+  "name": "jeff-bot-site",
+  "compatibility_date": "2026-01-01",
+  "assets": {
+    "directory": "./site"
+  },
+  "routes": [
+    {
+      "pattern": "jeff.grantcole.net",
+      "custom_domain": true
+    }
+  ]
+}
