@@ -50,10 +50,20 @@ QUEUE_NAMES = {
     480: "Swiftplay",
     490: "Quickplay",
     700: "Clash",
+    720: "ARAM Clash",
+    870: "Co-op vs AI",
+    880: "Co-op vs AI",
+    890: "Co-op vs AI",
     900: "ARURF",
+    1400: "Ultimate Spellbook",
     1700: "Arena",
+    1710: "Arena",
     1900: "URF",
+    2300: "Brawl",
+    2400: "ARAM: Mayhem",
 }
+
+ARAM_QUEUE_IDS = {450, 720, 2400}
 
 
 def queue_name(queue_id: int) -> str:

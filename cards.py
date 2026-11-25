@@ -1103,27 +1103,28 @@ async def render_build_card(
     allies: Optional[list[str]] = None,
     role: str = "",
     patch: str = "",
+    subtitle_extra: str = "",
 ) -> io.BytesIO:
-    """Renders a visual Build Path & Item Order card with Data Dragon champion & item icons."""
-    W, H = 1400, 740
+    """Renders a self-contained visual Build Path & Item Order card with Data Dragon icons."""
+    W, H = 1400, 800
     enemies = [e.strip() for e in (enemies or []) if e.strip()][:5]
 
-    # Build ordered main path: Starter -> Boots -> Core 1 -> Core 2 -> Core 3
-    main_steps: list[tuple[str, str]] = []
+    # Build ordered main path: (tag, item_name, short_why)
+    main_steps: list[tuple[str, str, str]] = []
     if build.get("starter", {}).get("item"):
-        main_steps.append(("STARTER", build["starter"]["item"]))
+        main_steps.append(("STARTER", build["starter"]["item"], build["starter"].get("why", "")))
     if build.get("boots", {}).get("item"):
-        main_steps.append(("BOOTS", build["boots"]["item"]))
+        main_steps.append(("BOOTS", build["boots"]["item"], build["boots"].get("why", "")))
     for idx, c in enumerate(build.get("core", [])[:3], 1):
         if c.get("item"):
-            main_steps.append((f"CORE {idx}", c["item"]))
+            main_steps.append((f"CORE {idx}", c["item"], c.get("why", "")))
 
     situational = [s for s in build.get("situational", [])[:3] if s.get("item")]
 
     # Fetch all icons concurrently
     champ_task = assets.get_champion_icon(champion)
     enemy_tasks = [assets.get_champion_icon(e) for e in enemies]
-    main_item_tasks = [assets.get_item_icon(item_ids.get(name) or 0) for _, name in main_steps]
+    main_item_tasks = [assets.get_item_icon(item_ids.get(name) or 0) for _, name, _ in main_steps]
     sit_item_tasks = [assets.get_item_icon(item_ids.get(s["item"]) or 0) for s in situational]
 
     all_fetched = await asyncio.gather(champ_task, *enemy_tasks, *main_item_tasks, *sit_item_tasks)
@@ -1137,6 +1138,25 @@ async def render_build_card(
     canvas = _render_ascii_backdrop(W, H)
     d = ImageDraw.Draw(canvas)
 
+    def _wrap_text(text: str, max_chars: int, max_lines: int) -> list[str]:
+        lines: list[str] = []
+        cur = ""
+        for word in (text or "").split():
+            cand = f"{cur} {word}".strip()
+            if len(cand) <= max_chars:
+                cur = cand
+            else:
+                if cur:
+                    lines.append(cur)
+                cur = word
+                if len(lines) == max_lines:
+                    break
+        if cur and len(lines) < max_lines:
+            lines.append(cur)
+        elif len(lines) == max_lines and len(" ".join(lines)) < len((text or "").strip()):
+            lines[-1] = lines[-1][: max_chars - 1].rstrip(" .,;") + "…"
+        return lines
+
     # --- Header: Champion Portrait + Title ---
     _paste_circular_portrait(
         canvas,
@@ -1149,14 +1169,18 @@ async def render_build_card(
         fallback_text=champion,
     )
     disp_champ = _display_champ_name(champion)
-    d.text((224, 82), f"{disp_champ} Build", font=_font(52, weight="SemiBold"), fill=(246, 250, 255, 255))
+    d.text((224, 78), f"{disp_champ} Build", font=_font(54, weight="SemiBold"), fill=(246, 250, 255, 255))
 
-    sub_parts = ["RECOMMENDED PATH"]
+    sub_parts = []
+    if subtitle_extra:
+        sub_parts.append(subtitle_extra.upper())
+    else:
+        sub_parts.append("RECOMMENDED PATH")
     if role:
         sub_parts.append(role.upper())
     if patch:
         sub_parts.append(f"PATCH {patch}")
-    _spaced_text(d, (226, 152), "  •  ".join(sub_parts), _font(16, weight="Regular", mono=True), (154, 180, 214, 235), tracking=2.2)
+    _spaced_text(d, (226, 150), "  •  ".join(sub_parts), _font(16, weight="Regular", mono=True), (154, 180, 214, 235), tracking=2.0)
 
     # --- Top Right: Enemy Comp Portraits ---
     if enemies:
@@ -1164,7 +1188,7 @@ async def render_build_card(
         panel_x = W - 52 - panel_w
         epanel = Image.new("RGBA", (panel_w, 134), (0, 0, 0, 0))
         epd = ImageDraw.Draw(epanel)
-        epd.rounded_rectangle((0, 0, panel_w - 1, 133), radius=14, fill=(6, 12, 24, 175), outline=(92, 46, 72, 165), width=1)
+        epd.rounded_rectangle((0, 0, panel_w - 1, 133), radius=14, fill=(6, 12, 24, 185), outline=(92, 46, 72, 165), width=1)
         canvas.alpha_composite(epanel, (panel_x, 68))
 
         d.text((W - 64, 76), "VS ENEMY COMP", font=_font(13, weight="Bold", mono=True), fill=(255, 138, 144, 245), anchor="ra")
@@ -1181,10 +1205,10 @@ async def render_build_card(
                 ring_width=3,
                 fallback_text=ename,
             )
-            d.text((ex, 174), _display_champ_name(ename)[:10], font=_font(13, weight="SemiBold"), fill=(228, 236, 248, 245), anchor="mt")
+            d.text((ex, 174), _display_champ_name(ename)[:11], font=_font(13, weight="SemiBold"), fill=(228, 236, 248, 245), anchor="mt")
 
-    # --- Middle: Ordered Build Path Flow ---
-    sec_y = 244
+    # --- Middle: Ordered Build Path Flow with Per-Item Reasons ---
+    sec_y = 236
     _draw_icon(canvas, "swords", (58, sec_y + 2), 22, (236, 192, 92))
     d.text((92, sec_y), "Build Order", font=_font(21, weight="Regular", mono=True), fill=(214, 224, 240, 245))
     d.line([(248, sec_y + 13), (W - 58, sec_y + 13)], fill=(54, 78, 118, 170), width=1)
@@ -1192,18 +1216,16 @@ async def render_build_card(
     if main_steps:
         n_steps = len(main_steps)
         box_s = 92
-        total_span = W - 180
+        total_span = W - 120
         step_dx = total_span // max(1, n_steps)
-        first_cx = 90 + step_dx // 2
-        item_cy = 344
+        first_cx = 60 + step_dx // 2
+        item_cy = 342
 
-        for idx, (tag, iname) in enumerate(main_steps):
+        for idx, (tag, iname, why) in enumerate(main_steps):
             cx = first_cx + idx * step_dx
-            # Tag pill above
             tag_col = (236, 192, 92, 245) if tag.startswith("CORE") else (126, 198, 255, 240)
             d.text((cx, item_cy - 68), tag, font=_font(14, weight="Bold", mono=True), fill=tag_col, anchor="mm")
 
-            # Item tile frame
             x0, y0 = cx - box_s // 2, item_cy - box_s // 2
             border_c = (216, 174, 84, 235) if tag.startswith("CORE") else (84, 152, 228, 220)
             d.rounded_rectangle((x0, y0, x0 + box_s, y0 + box_s), radius=14, fill=(12, 22, 42, 235), outline=border_c, width=3)
@@ -1215,31 +1237,32 @@ async def render_build_card(
             else:
                 d.text((cx, item_cy), iname[:3].upper(), font=_font(22, weight="Bold"), fill=(180, 206, 240, 240), anchor="mm")
 
-            # Item name below (wrapped neatly to 2 short lines if needed)
-            words = iname.split()
-            if len(iname) > 15 and len(words) >= 2:
-                mid = len(words) // 2
-                l1 = " ".join(words[:mid])
-                l2 = " ".join(words[mid:])
-                d.text((cx, item_cy + 62), l1, font=_font(16, weight="SemiBold"), fill=(242, 246, 255, 255), anchor="mt")
-                d.text((cx, item_cy + 82), l2, font=_font(16, weight="SemiBold"), fill=(242, 246, 255, 255), anchor="mt")
-            else:
-                d.text((cx, item_cy + 66), iname, font=_font(16, weight="SemiBold"), fill=(242, 246, 255, 255), anchor="mt")
+            # Item name (up to 2 lines, never truncated)
+            name_lines = _wrap_text(iname, max_chars=18, max_lines=2)
+            ny = item_cy + 58
+            for nl in name_lines:
+                d.text((cx, ny), nl, font=_font(17, weight="SemiBold"), fill=(244, 248, 255, 255), anchor="mt")
+                ny += 21
 
-            # Connecting arrow to next item
+            # Concise why rationale underneath
+            if why:
+                for wl in _wrap_text(why, max_chars=24, max_lines=2):
+                    d.text((cx, ny + 4), wl, font=_font(13, weight="Regular"), fill=(154, 180, 214, 235), anchor="mt")
+                    ny += 17
+
             if idx < n_steps - 1:
                 ax = cx + step_dx // 2
                 d.text((ax, item_cy), "→", font=_font(34, weight="Bold"), fill=(112, 178, 248, 210), anchor="mm")
 
     # --- Bottom Left: Situational Flex Items ---
-    sit_y = 482
+    sit_y = 516
     _draw_icon(canvas, "star", (58, sit_y + 2), 22, (206, 144, 255))
-    d.text((92, sit_y), "Situational Flex", font=_font(21, weight="Regular", mono=True), fill=(214, 224, 240, 245))
-    d.line([(312, sit_y + 13), (850, sit_y + 13)], fill=(54, 78, 118, 170), width=1)
+    d.text((92, sit_y), "Situational Swaps", font=_font(21, weight="Regular", mono=True), fill=(214, 224, 240, 245))
+    d.line([(334, sit_y + 13), (848, sit_y + 13)], fill=(54, 78, 118, 170), width=1)
 
     for idx, s in enumerate(situational):
-        sx = 64 + idx * 268
-        sy = 532
+        sx = 58 + idx * 270
+        sy = 562
         d.rounded_rectangle((sx, sy, sx + 64, sy + 64), radius=10, fill=(14, 24, 44, 235), outline=(146, 108, 228, 210), width=2)
         im = sit_item_imgs[idx] if idx < len(sit_item_imgs) else None
         if im is not None:
@@ -1247,50 +1270,32 @@ async def render_build_card(
         else:
             d.text((sx + 32, sy + 32), s["item"][:2].upper(), font=_font(18, weight="Bold"), fill=(196, 174, 245, 240), anchor="mm")
 
-        d.text((sx + 76, sy + 4), s["item"][:19], font=_font(17, weight="SemiBold"), fill=(242, 246, 255, 255))
-        why_txt = (s.get("why") or "")[:44]
-        if len(why_txt) > 22:
-            split_i = why_txt.rfind(" ", 0, 23)
-            if split_i == -1:
-                split_i = 22
-            d.text((sx + 76, sy + 28), why_txt[:split_i], font=_font(14, weight="Regular"), fill=(154, 178, 210, 235))
-            d.text((sx + 76, sy + 46), why_txt[split_i:].strip(), font=_font(14, weight="Regular"), fill=(154, 178, 210, 235))
-        else:
-            d.text((sx + 76, sy + 30), why_txt, font=_font(14, weight="Regular"), fill=(154, 178, 210, 235))
+        iname_lines = _wrap_text(s["item"], max_chars=18, max_lines=2)
+        iy = sy
+        for nl in iname_lines:
+            d.text((sx + 76, iy), nl, font=_font(16, weight="SemiBold"), fill=(244, 248, 255, 255))
+            iy += 20
+        for wl in _wrap_text(s.get("why", ""), max_chars=23, max_lines=2):
+            d.text((sx + 76, iy + 2), wl, font=_font(13, weight="Regular"), fill=(154, 178, 210, 235))
+            iy += 17
 
-    # --- Bottom Right: Runes / Team Context ---
-    rx = 890
+    # --- Bottom Right: Runes & Gameplan ---
+    rx = 886
     _draw_icon(canvas, "bars", (rx, sit_y + 2), 22, (112, 198, 255))
-    d.text((rx + 34, sit_y), "Runes & Focus", font=_font(21, weight="Regular", mono=True), fill=(214, 224, 240, 245))
-    d.line([(rx + 216, sit_y + 13), (W - 58, sit_y + 13)], fill=(54, 78, 118, 170), width=1)
+    d.text((rx + 34, sit_y), "Runes & Gameplan", font=_font(21, weight="Regular", mono=True), fill=(214, 224, 240, 245))
+    d.line([(rx + 254, sit_y + 13), (W - 58, sit_y + 13)], fill=(54, 78, 118, 170), width=1)
 
     runes_txt = build.get("runes") or "Adaptive standard page"
-    d.text((rx, 534), runes_txt[:46], font=_font(18, weight="SemiBold"), fill=(116, 224, 255, 255))
+    d.text((rx, 562), runes_txt[:46], font=_font(20, weight="SemiBold"), fill=(116, 224, 255, 255))
 
     if allies:
         ally_str = "Allies: " + ", ".join(_display_champ_name(a) for a in allies[:4])
-        d.text((rx, 568), ally_str[:52], font=_font(15, weight="Regular", mono=True), fill=(156, 180, 214, 235))
+        d.text((rx, 594), ally_str[:52], font=_font(15, weight="Regular", mono=True), fill=(156, 180, 214, 235))
 
     note = (build.get("gameplan") or "").strip()
     if note:
-        # Clean 3-line wrap with ellipsis if truncated
-        wrapped: list[str] = []
-        cur = ""
-        for w in note.split():
-            cand = f"{cur} {w}".strip()
-            if len(cand) <= 50:
-                cur = cand
-            else:
-                wrapped.append(cur)
-                cur = w
-                if len(wrapped) == 3:
-                    break
-        if cur and len(wrapped) < 3:
-            wrapped.append(cur)
-        elif len(wrapped) == 3 and len(" ".join(wrapped)) < len(note):
-            wrapped[-1] = wrapped[-1][:47].rstrip(" .,;") + "…"
-        for li, line_txt in enumerate(wrapped):
-            d.text((rx, 598 + li * 22), line_txt, font=_font(15, weight="Regular"), fill=(208, 220, 238, 235))
+        for li, line_txt in enumerate(_wrap_text(note, max_chars=50, max_lines=4)):
+            d.text((rx, 624 + li * 22), line_txt, font=_font(15, weight="Regular"), fill=(218, 228, 244, 240))
 
     _draw_footer(canvas, "ADAPTIVE BUILD ENGINE  •  JEFF BOT")
     return _to_png_bytes(canvas)

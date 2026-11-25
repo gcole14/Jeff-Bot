@@ -635,10 +635,11 @@ async def slash_build(
                     enemy_list = lobby["enemies"]
                 if not ally_list:
                     ally_list = lobby["allies"]
-                if lobby["queue_id"] == 450 and "aram" not in extra_notes.lower():
-                    extra_notes = f"ARAM mode. {extra_notes}".strip()
-                elif lobby["queue_id"] == 1700 and "arena" not in extra_notes.lower():
-                    extra_notes = f"Arena mode. {extra_notes}".strip()
+                from stats import ARAM_QUEUE_IDS
+                if lobby["queue_id"] in ARAM_QUEUE_IDS and "aram" not in extra_notes.lower():
+                    extra_notes = f"{lobby['queue_name']} (single-lane ARAM teamfight mode — no split-pushing, use ARAM-optimal starter/items). {extra_notes}".strip()
+                elif lobby["queue_id"] in (1700, 1710) and "arena" not in extra_notes.lower():
+                    extra_notes = f"Arena 2v2 mode. {extra_notes}".strip()
 
         if not chosen_champ:
             await interaction.followup.send("❌ Could not determine champion — please specify `champion:`.")
@@ -683,20 +684,10 @@ async def slash_build(
             allies=ally_list,
             role=role,
             patch=patch_ver or patch,
+            subtitle_extra=detected_for or "",
         )
-        embed = build_item_build_embed(
-            champion=chosen_champ,
-            build=build,
-            enemies=enemy_list,
-            allies=ally_list,
-            role=role,
-            patch=patch_ver or patch,
-        )
-        header_msg = f"🟢 Auto-detected live game for **{detected_for}**" if detected_for else None
         await interaction.followup.send(
-            content=header_msg,
             file=discord.File(card_buf, filename=f"{chosen_champ.lower()}_build.png"),
-            embed=embed,
         )
     except Exception as e:
         logger.exception(f"Build recommendation failed: {e}")
@@ -756,10 +747,30 @@ async def slash_review(
             gold_diff_15=report.gold_diff_15,
             role=report.role,
         )
-        await interaction.followup.send(
-            file=discord.File(card_buf, filename=f"{report.display_name}_vod.png"),
-            embed=build_review_embed(report, review_text),
-        )
+        # Send the VOD match card + a lean coaching-only embed (no duplicate scoreboard fields)
+        vod_embed = None
+        flags = [f"⚠️ {d}" for d in report.objective_throw_deaths[:3]] + [
+            f"💀 {c}" for c in report.death_clusters[:2]
+        ]
+        if review_text or flags:
+            vod_embed = discord.Embed(
+                title=f"🧠 Coach Jeff's VOD Breakdown — {report.display_name}",
+                description=(review_text or "")[:4096] or None,
+                color=0x22C55E if report.win else 0xC62B2B,
+            )
+            if flags:
+                vod_embed.add_field(name="🚩 Key Moments", value="\n".join(flags)[:1024], inline=False)
+            vod_embed.set_footer(text=f"Match {report.match_id} • Powered by Riot Timeline + DeepSeek")
+
+        if vod_embed:
+            await interaction.followup.send(
+                file=discord.File(card_buf, filename=f"{report.display_name}_vod.png"),
+                embed=vod_embed,
+            )
+        else:
+            await interaction.followup.send(
+                file=discord.File(card_buf, filename=f"{report.display_name}_vod.png"),
+            )
     except Exception as e:
         await interaction.followup.send(f"❌ VOD review failed: {e}")
 
