@@ -9,7 +9,8 @@ from types import SimpleNamespace
 import pytest
 from aiohttp import web
 
-from ai import DeepSeekClient
+from ai import DeepSeekClient, VOICE_SYSTEM_PROMPT
+from stats import StatsAggregator, _format_summoner_spells
 from listen import (
     DISCORD_BYTES_PER_SEC,
     PhraseSegmenter,
@@ -352,21 +353,169 @@ def test_answer_voice_question_includes_linked_riot_id_and_history():
         captured = {}
 
         async def _fake_chat(system_prompt, user_prompt, **kwargs):
+            captured["system_prompt"] = system_prompt
             captured["user_prompt"] = user_prompt
             return "You went 12 and 2 on Ahri."
 
         client = DeepSeekClient(api_key="test-key")
         client._chat = _fake_chat  # type: ignore
         reply = await client.answer_voice_question(
-            "How did I do?",
+            "What do I build against this guy top?",
             "Cookmysock#cook: 3W-1L",
             "Grant",
             speaker_riot_id="Cookmysock#cook",
             history=[("Grant", "Who carried?", "You did on Ahri.")],
+            live_match_context=(
+                "Live match (Ranked Solo, 12m in, Patch 15.23):\n"
+                "Cookmysock is currently playing Mordekaiser with Teleport.\n"
+                "Allies: Mordekaiser (Teleport) [ASKER: Cookmysock]\n"
+                "Enemies: Aatrox (Teleport)"
+            ),
+            patch_version="15.23",
         )
         assert reply == "You went 12 and 2 on Ahri."
+        assert captured["system_prompt"] == VOICE_SYSTEM_PROMPT
+        assert "general League of Legends questions" in captured["system_prompt"]
         assert "Cookmysock#cook" in captured["user_prompt"]
         assert "Who carried?" in captured["user_prompt"]
         assert "You did on Ahri." in captured["user_prompt"]
+        assert "Aatrox (Teleport)" in captured["user_prompt"]
+        assert "Current League patch: 15.23" in captured["user_prompt"]
+
+    asyncio.run(_run())
+
+
+def test_build_live_match_context_formats_comps_and_spells():
+    assert _format_summoner_spells(4, 12) == "Teleport"
+    assert _format_summoner_spells(6, 12) == "Ghost/Teleport"
+    assert _format_summoner_spells(4, 11) == "Smite"
+
+    async def _run():
+        class FakeRiot:
+            async def get_ddragon_latest_version(self):
+                return "15.23.1"
+
+            async def get_ddragon_champions(self, version):
+                return {
+                    "data": {
+                        "Mordekaiser": {"key": "82", "name": "Mordekaiser"},
+                        "Aatrox": {"key": "266", "name": "Aatrox"},
+                        "Ahri": {"key": "103", "name": "Ahri"},
+                        "LeeSin": {"key": "64", "name": "Lee Sin"},
+                    }
+                }
+
+            async def get_active_game(self, puuid):
+                if puuid != "puuid-grant":
+                    return None
+                return {
+                    "gameId": 999,
+                    "gameQueueConfigId": 420,
+                    "gameLength": 740,
+                    "participants": [
+                        {"puuid": "puuid-grant", "teamId": 100, "championId": 82, "spell1Id": 4, "spell2Id": 12},
+                        {"puuid": "puuid-friend", "teamId": 100, "championId": 103, "spell1Id": 4, "spell2Id": 14},
+                        {"puuid": "puuid-enemy1", "teamId": 200, "championId": 266, "spell1Id": 4, "spell2Id": 12},
+                        {"puuid": "puuid-enemy2", "teamId": 200, "championId": 64, "spell1Id": 4, "spell2Id": 11},
+                    ],
+                }
+
+        class FakeDB:
+            def get_puuid_to_name_map(self):
+                return {"puuid-grant": "Cookmysock", "puuid-friend": "31Sec"}
+
+        agg = StatsAggregator(riot=FakeRiot(), db=FakeDB())
+
+        async def _fake_resolve(rid):
+            if rid.startswith("Cookmysock"):
+                return "puuid-grant", 100, 1
+            return "puuid-other", 100, 1
+
+        agg._resolve_player = _fake_resolve  # type: ignore
+
+        ctx, champs = await agg.build_live_match_context("Cookmysock#cook")
+        assert "Ranked Solo, 12m in, Patch 15.23" in ctx
+        assert "Cookmysock is currently playing Mordekaiser with Teleport." in ctx
+        assert "Mordekaiser (Teleport) [ASKER: Cookmysock]" in ctx
+        assert "Ahri (Ignite) [FRIEND: 31Sec]" in ctx
+        assert "Enemies: Aatrox (Teleport), Lee Sin (Smite)" in ctx
+        assert champs == ["Mordekaiser", "Ahri", "Aatrox", "Lee Sin"]
+
+        # Unlinked speaker falls back to checking roster
+        agg.get_roster = lambda: ["Cookmysock#cook"]  # type: ignore
+        ctx2, champs2 = await agg.build_live_match_context(None)
+        assert "Squad members in this match:" in ctx2
+        assert "Aatrox (Teleport)" in ctx2
+        assert champs2 == ["Mordekaiser", "Ahri", "Aatrox", "Lee Sin"]
+
+    asyncio.run(_run())
+
+
+def test_voice_listener_passes_live_match_and_survives_squad_context_error():
+    async def _run():
+        captured = {}
+        spoken = []
+        live_calls = 0
+
+        class FakeAggregator:
+            def get_roster(self):
+                return ["Cookmysock#cook"]
+
+            async def build_squad_context(self, days=14):
+                raise RuntimeError("Riot API expired")
+
+            async def build_live_match_context(self, speaker_riot_id=None):
+                nonlocal live_calls
+                live_calls += 1
+                return "Live match (Ranked Solo, 8m in):\nEnemies: Darius (Ghost/Teleport)", ["Pantheon", "Darius"]
+
+            async def get_current_patch(self):
+                return "15.23"
+
+        class FakeDeepSeek:
+            is_configured = True
+
+            async def answer_voice_question(self, question, squad_context, asker, **kwargs):
+                captured["question"] = question
+                captured["squad_context"] = squad_context
+                captured.update(kwargs)
+                return "Grab Plated Steelcaps and anti-heal against Darius."
+
+        class FakeVoiceManager:
+            tts = SimpleNamespace(primary_supports_tags=False)
+
+            def connected_channel(self, gid):
+                return None
+
+            async def speak(self, gid, text, wait_finished=True):
+                spoken.append(text)
+                return SimpleNamespace(backend="test")
+
+        class FakeDB:
+            def get_linked_riot_id(self, uid):
+                return "Cookmysock#cook"
+
+        mgr = VoiceListenerManager(
+            voice_manager=FakeVoiceManager(),
+            stt_client=STTClient(worker_url=""),
+            deepseek=FakeDeepSeek(),
+            aggregator=FakeAggregator(),
+            db=FakeDB(),
+            enabled=True,
+        )
+        from listen import _GuildListenState
+        gstate = _GuildListenState(1)
+
+        await mgr._answer_and_speak(gstate, 42, "Grant", "What do I build against this guy top?")
+        assert spoken == ["Grab Plated Steelcaps and anti-heal against Darius."]
+        assert captured["squad_context"] == ""
+        assert "Darius (Ghost/Teleport)" in captured["live_match_context"]
+        assert captured["patch_version"] == "15.23"
+        assert "Darius" in mgr._build_stt_prompt(1)
+        assert "Pantheon" in mgr._build_stt_prompt(1)
+
+        # Second call within 30s hits the live match cache
+        await mgr._answer_and_speak(gstate, 42, "Grant", "Is Pantheon a good jungler?")
+        assert live_calls == 1
 
     asyncio.run(_run())

@@ -32,6 +32,23 @@ COACH_SYSTEM_PROMPT = (
     "Skip fluff and generic platitudes; cite the exact numbers that matter."
 )
 
+VOICE_SYSTEM_PROMPT = (
+    "You are Jeff, a sharp Challenger-level League of Legends coach and sharp-tongued friend "
+    "hanging out on Discord voice comms with a tight-knit 4-person squad. You speak casually "
+    "like one of the boys—witty, concise, and genuinely helpful, with playful banter when "
+    "roasting and real hype when someone pops off (never slurs or genuinely mean attacks). "
+    "Answer BOTH general League of Legends questions (champion viability, roles, matchups, "
+    "builds, runes, item comparisons, macro, jungle pathing, mechanics) using current-season "
+    "League knowledge (never recommend removed Mythic items like Galeforce, Everfrost, or "
+    "Mythic Duskblade) AND live-match or squad-stats questions. "
+    "When a current live match is provided, use the speaker's champion, ally/enemy comps, "
+    "summoner spells, and queue mode to give concrete in-game advice (lane matchup, build path, "
+    "situational items). "
+    "Only cite a friend's personal match history, KDA, win rates, or ranks from the provided "
+    "squad data—never invent personal stats, and do NOT drag unrelated match history into a "
+    "general League or live-game question unless the user asks about their stats or it's genuinely relevant."
+)
+
 
 class DeepSeekClient:
     """Async DeepSeek Chat Completions client using aiohttp (zero extra SDKs)."""
@@ -299,12 +316,37 @@ class DeepSeekClient:
     # 5. Interactive Q&A (/ask)
     # -------------------------------------------------------------------------
 
-    async def answer_question(self, question: str, squad_context: str, asker: str) -> Optional[str]:
+    async def answer_question(
+        self,
+        question: str,
+        squad_context: str,
+        asker: str,
+        speaker_riot_id: Optional[str] = None,
+        live_match_context: Optional[str] = None,
+        patch_version: Optional[str] = None,
+    ) -> Optional[str]:
+        identity_line = (
+            f"Their linked League Riot ID is '{speaker_riot_id}' "
+            f"(when they say 'I', 'me', or 'my', they mean {speaker_riot_id}).\n"
+            if speaker_riot_id
+            else ""
+        )
+        patch_line = f"Current League patch: {patch_version}\n" if patch_version else ""
+        live_block = f"\n{live_match_context}\n" if live_match_context else ""
+        squad_block = (
+            f"\nSquad tracked data (use when relevant to personal/squad stats):\n{squad_context}\n"
+            if squad_context
+            else ""
+        )
         prompt = (
-            f"Discord user '{asker}' asks: {question}\n\n"
-            f"Here is the squad's live tracked data:\n{squad_context}\n\n"
-            "Answer directly and concisely (under 220 words). Use exact stats from the data "
-            "when relevant, and League expertise for matchup/build/macro questions."
+            f"Discord user '{asker}' asks: {question}\n"
+            f"{identity_line}"
+            f"{patch_line}"
+            f"{live_block}"
+            f"{squad_block}\n"
+            "Answer directly and concisely (under 220 words). Use the live match context and "
+            "current-season League expertise for matchup, viability, build, item, and macro questions, "
+            "and use exact stats from the squad data when relevant (never invent personal stats)."
         )
         return await self._chat(COACH_SYSTEM_PROMPT, prompt, max_tokens=340, temperature=0.6)
 
@@ -316,6 +358,8 @@ class DeepSeekClient:
         allow_paralinguistic: bool = False,
         speaker_riot_id: Optional[str] = None,
         history: Optional[list[tuple[str, str, str]]] = None,
+        live_match_context: Optional[str] = None,
+        patch_version: Optional[str] = None,
     ) -> Optional[str]:
         """Short, natural spoken reply designed for Discord voice comms."""
         tag_hint = (
@@ -329,6 +373,12 @@ class DeepSeekClient:
             if speaker_riot_id
             else ""
         )
+        patch_line = f"Current League patch: {patch_version}\n" if patch_version else ""
+        live_block = (
+            f"\n{live_match_context}\n"
+            if live_match_context
+            else "\nCurrent live match: none detected right now.\n"
+        )
         history_block = ""
         if history:
             turns = []
@@ -336,17 +386,28 @@ class DeepSeekClient:
                 turns.append(f"- {h_speaker}: {h_q}\n  Jeff: {h_a}")
             history_block = "\nRecent voice conversation (for follow-up context):\n" + "\n".join(turns) + "\n"
 
+        squad_block = (
+            f"\nSquad tracked data (background reference—use only if relevant to the question):\n{squad_context}\n"
+            if squad_context
+            else ""
+        )
+
         prompt = (
             f"You are on Discord voice comms with your friends while they play League. "
             f"'{asker}' just asked you: {question}\n"
             f"{identity_line}"
-            f"{history_block}\n"
-            f"Squad tracked data:\n{squad_context}\n\n"
-            "Reply in 1 to 3 short, conversational spoken sentences (under 55 words total). "
+            f"{patch_line}"
+            f"{live_block}"
+            f"{history_block}"
+            f"{squad_block}\n"
+            "Reply in 1 to 3 short, conversational spoken sentences (under 65 words total). "
+            "If they ask a general League, matchup, viability, or item question, answer it directly "
+            "using current-season League knowledge and the live match above if applicable—don't bring "
+            "up unrelated match history. "
             "No markdown, no bullet points, no emojis—write exactly how you would say it out loud on mic."
             f"{tag_hint}"
         )
-        return await self._chat(JEFF_SYSTEM_PROMPT, prompt, max_tokens=140, temperature=0.75)
+        return await self._chat(VOICE_SYSTEM_PROMPT, prompt, max_tokens=180, temperature=0.7)
 
     # -------------------------------------------------------------------------
     # 6. Adaptive Build Recommender (/build)

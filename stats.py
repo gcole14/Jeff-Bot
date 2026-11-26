@@ -65,9 +65,34 @@ QUEUE_NAMES = {
 
 ARAM_QUEUE_IDS = {450, 720, 2400}
 
+SUMMONER_SPELLS = {
+    1: "Cleanse",
+    3: "Exhaust",
+    4: "Flash",
+    6: "Ghost",
+    7: "Heal",
+    11: "Smite",
+    12: "Teleport",
+    13: "Clarity",
+    14: "Ignite",
+    21: "Barrier",
+    32: "Snowball",
+}
+
 
 def queue_name(queue_id: int) -> str:
     return QUEUE_NAMES.get(queue_id, f"Queue {queue_id}" if queue_id else "Unknown")
+
+
+def _format_summoner_spells(spell1_id: int, spell2_id: int) -> str:
+    """Returns compact non-Flash spell hint (e.g. 'Teleport', 'Smite', 'Ghost/Teleport')."""
+    names = [SUMMONER_SPELLS.get(int(s), "") for s in (spell1_id, spell2_id)]
+    names = [n for n in names if n]
+    if not names:
+        return ""
+    non_flash = [n for n in names if n != "Flash"]
+    shown = non_flash if non_flash else names
+    return "/".join(shown)
 
 
 def resolve_riot_id(name_or_id: str, roster: Optional[list[str]] = None) -> str:
@@ -1077,6 +1102,142 @@ class StatsAggregator:
                 lines.append(f"  Duo {d['pair']}: {d['wins']}W-{d['losses']}L ({d['wr']:.0f}% WR)")
 
         return "\n".join(lines)
+
+    async def get_current_patch(self) -> str:
+        """Returns the current League patch (e.g. '15.23') from cached Data Dragon versions."""
+        try:
+            ver = await self.riot.get_ddragon_latest_version()
+            parts = ver.split(".")
+            return ".".join(parts[:2]) if len(parts) >= 2 else ver
+        except Exception as e:
+            logger.debug(f"Could not fetch current patch version: {e}")
+            return ""
+
+    async def build_live_match_context(
+        self, speaker_riot_id: Optional[str] = None
+    ) -> tuple[str, list[str]]:
+        """
+        Builds a compact summary of the speaker's (or squad's) currently active live match
+        for voice & /ask Q&A. Returns (context_text, live_champion_names).
+        """
+        try:
+            version, champ_map = await self._get_champion_name_map()
+            patch = ".".join(version.split(".")[:2]) if version else ""
+        except Exception:
+            champ_map = {}
+            patch = ""
+
+        squad_puuids = self.db.get_puuid_to_name_map() if self.db else {}
+
+        game: Optional[dict] = None
+        target_puuid: Optional[str] = None
+        target_display: Optional[str] = None
+        checked_puuids: set[str] = set()
+
+        # 1. Check speaker's own live match first (fast single Spectator-v5 call)
+        if speaker_riot_id:
+            try:
+                puuid, _, _ = await self._resolve_player(speaker_riot_id)
+                checked_puuids.add(puuid)
+                active = await self.riot.get_active_game(puuid)
+                if active:
+                    game = active
+                    target_puuid = puuid
+                    target_display = speaker_riot_id.split("#", 1)[0]
+                    squad_puuids.setdefault(puuid, target_display)
+            except Exception as e:
+                logger.debug(f"Live match lookup skipped for {speaker_riot_id}: {e}")
+
+        # 2. Fallback: check tracked squad roster in parallel (covers unlinked speakers or spectating friends)
+        if game is None:
+            roster = self.get_roster()
+
+            async def _check_roster_member(rid: str):
+                try:
+                    puuid, _, _ = await self._resolve_player(rid)
+                    if puuid in checked_puuids:
+                        return None
+                    active = await self.riot.get_active_game(puuid)
+                    if active:
+                        return rid, puuid, active
+                except Exception:
+                    pass
+                return None
+
+            found = await asyncio.gather(*[_check_roster_member(rid) for rid in roster])
+            for item in found:
+                if item is not None:
+                    rid, puuid, active = item
+                    game = active
+                    target_puuid = puuid
+                    squad_puuids.setdefault(puuid, rid.split("#", 1)[0])
+                    break
+
+        if not game:
+            return "", []
+
+        participants = game.get("participants", [])
+        if not participants:
+            return "", []
+
+        qid = int(game.get("gameQueueConfigId", 0))
+        q_label = queue_name(qid)
+        length_s = max(0, int(game.get("gameLength", 0)))
+        mins = length_s // 60
+
+        anchor = next((p for p in participants if p.get("puuid") == target_puuid), participants[0])
+        ally_team_id = int(anchor.get("teamId", 100))
+
+        allies: list[str] = []
+        enemies: list[str] = []
+        live_champs: list[str] = []
+        squad_in_game: list[str] = []
+        speaker_champ = ""
+        speaker_spells = ""
+
+        for p in participants:
+            cid = int(p.get("championId", 0))
+            cname = champ_map.get(cid, f"Champ {cid}")
+            if cname not in live_champs:
+                live_champs.append(cname)
+
+            spells = _format_summoner_spells(p.get("spell1Id", 0), p.get("spell2Id", 0))
+            spell_str = f" ({spells})" if spells else ""
+
+            p_puuid = p.get("puuid", "")
+            tag = ""
+            if target_display and p_puuid == target_puuid:
+                tag = f" [ASKER: {target_display}]"
+                speaker_champ = cname
+                speaker_spells = spells
+            elif p_puuid and p_puuid in squad_puuids:
+                fname = squad_puuids[p_puuid]
+                tag = f" [FRIEND: {fname}]"
+                squad_in_game.append(f"{fname} on {cname}{spell_str}")
+
+            entry = f"{cname}{spell_str}{tag}"
+            if int(p.get("teamId", -1)) == ally_team_id:
+                allies.append(entry)
+            else:
+                enemies.append(entry)
+
+        header_bits = [q_label]
+        if mins > 0:
+            header_bits.append(f"{mins}m in")
+        else:
+            header_bits.append("loading/just started")
+        if patch:
+            header_bits.append(f"Patch {patch}")
+
+        lines = [f"Live match ({', '.join(header_bits)}):"]
+        if target_display and speaker_champ:
+            sp = f" with {speaker_spells}" if speaker_spells else ""
+            lines.append(f"{target_display} is currently playing {speaker_champ}{sp}.")
+        elif squad_in_game:
+            lines.append("Squad members in this match: " + ", ".join(squad_in_game) + ".")
+        lines.append("Allies: " + ", ".join(allies))
+        lines.append("Enemies: " + ", ".join(enemies))
+        return "\n".join(lines), live_champs
 
     async def fetch_rank_only(self, riot_id: str) -> dict:
         try:

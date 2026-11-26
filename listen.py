@@ -654,6 +654,9 @@ class VoiceListenerManager:
         self._cached_squad_context: str = ""
         self._squad_context_at: float = 0.0
         self._squad_context_ttl_s: float = 60.0
+        self._live_context_cache: dict[str, tuple[str, list[str], float]] = {}
+        self._live_context_ttl_s: float = 30.0
+        self._last_live_champs: list[str] = []
 
     def is_listening(self, guild_id: int) -> bool:
         st = self._guilds.get(guild_id)
@@ -682,7 +685,10 @@ class VoiceListenerManager:
             for m in ch.members:
                 if not m.bot and m.display_name and m.display_name not in terms:
                     terms.append(m.display_name)
-        return ", ".join(terms[:18])
+        for champ in self._last_live_champs[:10]:
+            if champ and champ not in terms:
+                terms.append(champ)
+        return ", ".join(terms[:28])
 
     def _make_sink(self, gstate: _GuildListenState, loop: asyncio.AbstractEventLoop) -> Any:
         from discord.ext import voice_recv
@@ -839,10 +845,40 @@ class VoiceListenerManager:
         now = time.monotonic()
         if self._cached_squad_context and (now - self._squad_context_at) < self._squad_context_ttl_s:
             return self._cached_squad_context
-        ctx = await self.aggregator.build_squad_context(days=14)
-        self._cached_squad_context = ctx
-        self._squad_context_at = time.monotonic()
-        return ctx
+        try:
+            ctx = await self.aggregator.build_squad_context(days=14)
+            self._cached_squad_context = ctx
+            self._squad_context_at = time.monotonic()
+            return ctx
+        except Exception as e:
+            logger.warning("Could not refresh squad context (continuing without it): %s", e)
+            return self._cached_squad_context
+
+    async def _get_live_match_context(self, speaker_riot_id: Optional[str]) -> str:
+        if not hasattr(self.aggregator, "build_live_match_context"):
+            return ""
+        cache_key = speaker_riot_id or "__squad__"
+        now = time.monotonic()
+        cached = self._live_context_cache.get(cache_key)
+        if cached is not None and (now - cached[2]) < self._live_context_ttl_s:
+            return cached[0]
+        try:
+            live_ctx, live_champs = await self.aggregator.build_live_match_context(speaker_riot_id)
+            self._live_context_cache[cache_key] = (live_ctx, live_champs, time.monotonic())
+            if live_champs:
+                self._last_live_champs = live_champs
+            return live_ctx
+        except Exception as e:
+            logger.debug("Could not fetch live match context: %s", e)
+            return cached[0] if cached is not None else ""
+
+    async def _get_patch_version(self) -> str:
+        if not hasattr(self.aggregator, "get_current_patch"):
+            return ""
+        try:
+            return await self.aggregator.get_current_patch()
+        except Exception:
+            return ""
 
     async def _handle_phrase(self, gstate: _GuildListenState, phrase: CompletedPhrase) -> None:
         wav_bytes = await asyncio.to_thread(pcm48k_stereo_to_wav16k_mono, phrase.pcm)
@@ -910,7 +946,11 @@ class VoiceListenerManager:
         async with gstate.reply_lock:
             try:
                 linked_riot_id = self.db.get_linked_riot_id(user_id) if self.db else None
-                context = await self._get_squad_context()
+                context, live_ctx, patch_ver = await asyncio.gather(
+                    self._get_squad_context(),
+                    self._get_live_match_context(linked_riot_id),
+                    self._get_patch_version(),
+                )
                 history = self.memory.get_history(gstate.guild_id)
 
                 reply = await self.deepseek.answer_voice_question(
@@ -920,6 +960,8 @@ class VoiceListenerManager:
                     allow_paralinguistic=self.voice_manager.tts.primary_supports_tags,
                     speaker_riot_id=linked_riot_id,
                     history=history,
+                    live_match_context=live_ctx or None,
+                    patch_version=patch_ver or None,
                 )
                 if not reply:
                     return

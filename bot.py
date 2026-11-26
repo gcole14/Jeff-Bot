@@ -1135,8 +1135,24 @@ async def slash_ask(interaction: discord.Interaction, question: str):
         return
     await interaction.response.defer()
     try:
-        context = await aggregator.build_squad_context(days=14)
-        answer = await deepseek.answer_question(question, context, interaction.user.display_name)
+        linked_riot_id = db.get_linked_riot_id(interaction.user.id)
+        context, live_res, patch_ver = await asyncio.gather(
+            aggregator.build_squad_context(days=14),
+            aggregator.build_live_match_context(linked_riot_id),
+            aggregator.get_current_patch(),
+            return_exceptions=True,
+        )
+        squad_ctx = context if isinstance(context, str) else ""
+        live_ctx = live_res[0] if isinstance(live_res, tuple) else ""
+        patch_str = patch_ver if isinstance(patch_ver, str) else ""
+        answer = await deepseek.answer_question(
+            question,
+            squad_ctx,
+            interaction.user.display_name,
+            speaker_riot_id=linked_riot_id,
+            live_match_context=live_ctx or None,
+            patch_version=patch_str or None,
+        )
         if not answer:
             await interaction.followup.send("❌ DeepSeek didn't answer — check bot logs.")
             return
@@ -1456,14 +1472,24 @@ async def voice_ask(interaction: discord.Interaction, question: str):
             await voice_manager.join(user_voice.channel, self_deaf=not will_listen)
 
     try:
-        context = await aggregator.build_squad_context(days=14)
         linked_riot_id = db.get_linked_riot_id(interaction.user.id)
+        context, live_res, patch_ver = await asyncio.gather(
+            aggregator.build_squad_context(days=14),
+            aggregator.build_live_match_context(linked_riot_id),
+            aggregator.get_current_patch(),
+            return_exceptions=True,
+        )
+        squad_ctx = context if isinstance(context, str) else ""
+        live_ctx = live_res[0] if isinstance(live_res, tuple) else ""
+        patch_str = patch_ver if isinstance(patch_ver, str) else ""
         reply = await deepseek.answer_voice_question(
             question,
-            context,
+            squad_ctx,
             interaction.user.display_name,
             allow_paralinguistic=tts_client.primary_supports_tags,
             speaker_riot_id=linked_riot_id,
+            live_match_context=live_ctx or None,
+            patch_version=patch_str or None,
         )
         if not reply:
             await interaction.followup.send("❌ DeepSeek didn't answer — check bot logs.", ephemeral=True)
