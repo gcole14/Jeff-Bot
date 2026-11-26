@@ -20,7 +20,7 @@ if ($inUse) {
 }
 $Host.UI.RawUI.WindowTitle = "Jeff Voice Worker (port $($env:VOICE_WORKER_PORT))"
 
-Write-Host "Starting Jeff Bot Voice Worker (Chatterbox Turbo) on http://$($env:VOICE_WORKER_HOST):$($env:VOICE_WORKER_PORT)" -ForegroundColor Cyan
+Write-Host "Starting Jeff Bot Voice Worker (Chatterbox Turbo + Whisper STT) on http://$($env:VOICE_WORKER_HOST):$($env:VOICE_WORKER_PORT)" -ForegroundColor Cyan
 Write-Host "Drop 5-15s .wav clips into .\voices\ to clone voices live (no restart needed!)." -ForegroundColor DarkGray
 
 .\venv\Scripts\python.exe server.py

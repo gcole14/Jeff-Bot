@@ -153,31 +153,8 @@ def test_transport_crypto_error_resyncs_key():
     assert reader._updated_keys == [b"B" * 32]
 
 
-def test_install_patch_and_per_user_wave_sink(tmp_path: Path):
+def test_install_patch_and_opus_load():
     assert dave_recv.install_dave_recv_patch() is True
     assert dave_recv.ensure_opus_loaded() is True
-
-    sink = dave_recv.make_per_user_wave_sink()
-    alice = SimpleNamespace(id=101, display_name="Alice!", bot=False)
-    bob = SimpleNamespace(id=202, display_name="Bob", bot=False)
-    jeff = SimpleNamespace(id=999, display_name="Jeff Bot", bot=True)
-
-    frame = b"\x01\x02" * 1920  # 3840 bytes = 20ms stereo 48kHz 16-bit PCM
-    sink.write(alice, SimpleNamespace(pcm=frame))
-    sink.write(alice, SimpleNamespace(pcm=frame))
-    sink.write(bob, SimpleNamespace(pcm=frame))
-    sink.write(jeff, SimpleNamespace(pcm=frame))  # ignored (bot)
-
-    tracks = sink.export_wavs(tmp_path, prefix="test")
-    assert len(tracks) == 2
-    by_id = {t.user_id: t for t in tracks}
-    assert set(by_id.keys()) == {101, 202}
-    assert by_id[101].packets == 2
-    assert by_id[101].bytes_pcm == len(frame) * 2
-    assert by_id[202].packets == 1
-
-    with wave.open(str(by_id[101].path), "rb") as wf:
-        assert wf.getnchannels() == 2
-        assert wf.getsampwidth() == 2
-        assert wf.getframerate() == 48000
-        assert wf.readframes(wf.getnframes()) == frame * 2
+    stats = dave_recv.get_dave_recv_stats()
+    assert "ok" in stats and "fail" in stats and "opus_errors" in stats

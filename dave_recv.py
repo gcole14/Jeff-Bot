@@ -25,15 +25,9 @@ from __future__ import annotations
 
 import logging
 import os
-import re
-import struct
 import threading
-import time
-import wave
 import weakref
-from dataclasses import dataclass
-from pathlib import Path
-from typing import Any, Optional
+from typing import Any
 
 import discord
 import discord.opus
@@ -357,122 +351,3 @@ def get_dave_recv_stats(vc: Any = None) -> dict[str, Any]:
 
     return total
 
-
-def _safe_filename_part(name: str) -> str:
-    cleaned = re.sub(r"[^a-zA-Z0-9_-]+", "_", name.strip()).strip("_")
-    return (cleaned or "user")[:32]
-
-
-@dataclass
-class RecordedTrack:
-    user_id: int
-    display_name: str
-    path: Path
-    duration_s: float
-    packets: int
-    bytes_pcm: int
-
-
-def make_per_user_wave_sink() -> Any:
-    """Factory returning a PerUserWaveSink instance (imports voice_recv lazily)."""
-    from discord.ext import voice_recv
-
-    class PerUserWaveSink(voice_recv.AudioSink):
-        """Records decoded 48kHz stereo 16-bit PCM into separate per-speaker buffers for Phase 0 spike."""
-
-        SAMPLE_RATE = 48000
-        CHANNELS = 2
-        SAMPLE_WIDTH = 2  # 16-bit signed LE
-
-        def __init__(self) -> None:
-            super().__init__()
-            self._lock = threading.Lock()
-            self._buffers: dict[int, bytearray] = {}
-            self._names: dict[int, str] = {}
-            self._packets: dict[int, int] = {}
-            self._unknown_packets: int = 0
-            self.started_at: float = time.monotonic()
-
-        def wants_opus(self) -> bool:
-            return False
-
-        def write(self, user: Optional[discord.abc.User], data: Any) -> None:
-            pcm: bytes = getattr(data, "pcm", b"")
-            if not pcm:
-                return
-
-            if user is not None and getattr(user, "bot", False):
-                return
-
-            if user is not None:
-                uid = int(user.id)
-                name = getattr(user, "display_name", None) or getattr(user, "name", None) or str(uid)
-            else:
-                packet = getattr(data, "packet", None)
-                ssrc = getattr(packet, "ssrc", None)
-                vc = self.voice_client
-                uid = vc._get_id_from_ssrc(ssrc) if (vc and ssrc is not None) else None
-                if uid is None:
-                    with self._lock:
-                        self._unknown_packets += 1
-                    return
-                uid = int(uid)
-                member = vc.guild.get_member(uid) if (vc and vc.guild) else None
-                if member and member.bot:
-                    return
-                name = member.display_name if member else f"user_{uid}"
-
-            with self._lock:
-                buf = self._buffers.get(uid)
-                if buf is None:
-                    buf = bytearray()
-                    self._buffers[uid] = buf
-                    self._packets[uid] = 0
-                buf.extend(pcm)
-                self._packets[uid] += 1
-                self._names[uid] = name
-
-        def cleanup(self) -> None:
-            pass
-
-        def export_wavs(self, out_dir: Path, prefix: Optional[str] = None) -> list[RecordedTrack]:
-            out_dir.mkdir(parents=True, exist_ok=True)
-            stamp = prefix or time.strftime("%Y%m%d_%H%M%S")
-            tracks: list[RecordedTrack] = []
-            bytes_per_sec = self.SAMPLE_RATE * self.CHANNELS * self.SAMPLE_WIDTH
-
-            with self._lock:
-                items = [
-                    (uid, self._names.get(uid, str(uid)), bytes(buf), self._packets.get(uid, 0))
-                    for uid, buf in self._buffers.items()
-                ]
-
-            for uid, display_name, pcm_bytes, pkt_count in sorted(items, key=lambda x: x[1].lower()):
-                if not pcm_bytes:
-                    continue
-                fname = f"{stamp}_{_safe_filename_part(display_name)}_{uid}.wav"
-                fpath = out_dir / fname
-                with wave.open(str(fpath), "wb") as wf:
-                    wf.setnchannels(self.CHANNELS)
-                    wf.setsampwidth(self.SAMPLE_WIDTH)
-                    wf.setframerate(self.SAMPLE_RATE)
-                    wf.writeframes(pcm_bytes)
-
-                tracks.append(
-                    RecordedTrack(
-                        user_id=uid,
-                        display_name=display_name,
-                        path=fpath,
-                        duration_s=round(len(pcm_bytes) / bytes_per_sec, 2),
-                        packets=pkt_count,
-                        bytes_pcm=len(pcm_bytes),
-                    )
-                )
-            return tracks
-
-        @property
-        def unknown_packets(self) -> int:
-            with self._lock:
-                return self._unknown_packets
-
-    return PerUserWaveSink()

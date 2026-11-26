@@ -5,19 +5,13 @@ import os
 import shutil
 import tempfile
 import time
-from pathlib import Path
-from typing import Any, Optional
+from dataclasses import dataclass
+from typing import Any, Awaitable, Callable, Optional
 
 import discord
 
-from config import BASE_DIR, VOICE_ENABLED, VOICE_IDLE_MINUTES
-from dave_recv import (
-    RecordedTrack,
-    ensure_opus_loaded,
-    get_dave_recv_stats,
-    install_dave_recv_patch,
-    make_per_user_wave_sink,
-)
+from config import VOICE_ENABLED, VOICE_IDLE_MINUTES
+from dave_recv import ensure_opus_loaded, install_dave_recv_patch
 from tts import HybridTTSClient, TTSResult
 
 logger = logging.getLogger(__name__)
@@ -44,11 +38,18 @@ def check_voice_prereqs() -> tuple[bool, list[str]]:
     return len(missing) == 0, missing
 
 
+@dataclass
+class _PlaybackItem:
+    audio_bytes: bytes
+    audio_format: str  # "wav" or "mp3"
+    done_event: Optional[asyncio.Event] = None
+
+
 class _GuildVoiceState:
     def __init__(self, guild_id: int, voice_client: discord.VoiceClient):
         self.guild_id = guild_id
         self.voice_client = voice_client
-        self.queue: asyncio.Queue[Optional[TTSResult]] = asyncio.Queue()
+        self.queue: asyncio.Queue[Optional[_PlaybackItem]] = asyncio.Queue()
         self.worker_task: Optional[asyncio.Task] = None
         self.last_activity: float = time.monotonic()
 
@@ -68,6 +69,21 @@ class VoiceManager:
         self.auto_speak: bool = True
         self._guilds: dict[int, _GuildVoiceState] = {}
         self._idle_task: Optional[asyncio.Task] = None
+        self._on_join_hook: Optional[Callable[[int], Awaitable[Any]]] = None
+        self._on_leave_hook: Optional[Callable[[int], Awaitable[Any]]] = None
+
+    def set_lifecycle_hooks(
+        self,
+        *,
+        on_join: Optional[Callable[[int], Awaitable[Any]]] = None,
+        on_leave: Optional[Callable[[int], Awaitable[Any]]] = None,
+    ) -> None:
+        self._on_join_hook = on_join
+        self._on_leave_hook = on_leave
+
+    def get_voice_client(self, guild_id: int) -> Optional[discord.VoiceClient]:
+        state = self._guilds.get(guild_id)
+        return state.voice_client if state else None
 
     def is_connected(self, guild_id: int) -> bool:
         state = self._guilds.get(guild_id)
@@ -107,7 +123,26 @@ class VoiceManager:
         except asyncio.CancelledError:
             pass
 
-    async def join(self, channel: discord.VoiceChannel, *, self_deaf: bool = False) -> tuple[bool, str]:
+    async def set_self_deaf(self, guild_id: int, self_deaf: bool) -> bool:
+        """Updates Jeff's self-deafen state in a connected guild if it differs from current state."""
+        state = self._guilds.get(guild_id)
+        if not state or not state.voice_client or not state.voice_client.is_connected():
+            return False
+        vc = state.voice_client
+        guild = vc.guild
+        if not guild:
+            return False
+        me_voice = guild.me.voice if guild.me else None
+        if me_voice is not None and bool(me_voice.self_deaf) == bool(self_deaf):
+            return True
+        try:
+            await guild.change_voice_state(channel=vc.channel, self_deaf=self_deaf)
+            return True
+        except Exception as e:
+            logger.debug(f"Could not update self_deaf={self_deaf} in guild {guild_id}: {e}")
+            return False
+
+    async def join(self, channel: discord.VoiceChannel, *, self_deaf: bool = True) -> tuple[bool, str]:
         if not self.enabled:
             return False, "Voice is disabled (`VOICE_ENABLED=false`)."
         ok, missing = check_voice_prereqs()
@@ -124,10 +159,10 @@ class VoiceManager:
             if existing and existing.voice_client and existing.voice_client.is_connected():
                 if existing.voice_client.channel != channel:
                     await existing.voice_client.move_to(channel)
-                me_voice = channel.guild.me.voice if channel.guild.me else None
-                if me_voice is not None and bool(me_voice.self_deaf) != self_deaf:
-                    await channel.guild.change_voice_state(channel=existing.voice_client.channel, self_deaf=self_deaf)
+                await self.set_self_deaf(guild_id, self_deaf)
                 existing.last_activity = time.monotonic()
+                if self._on_join_hook:
+                    await self._on_join_hook(guild_id)
                 return True, f"Moved to **{channel.name}**."
 
             # Handle stale guild voice_client if discord.py still holds one
@@ -143,66 +178,27 @@ class VoiceManager:
             state.worker_task = asyncio.create_task(self._playback_loop(state))
             self._guilds[guild_id] = state
             self._ensure_idle_watcher()
+            if self._on_join_hook:
+                await self._on_join_hook(guild_id)
             return True, f"Joined **{channel.name}**!"
         except Exception as e:
             logger.exception(f"Failed to join voice channel {channel}: {e}")
             return False, f"Could not join voice channel: {e}"
 
-    async def record_test(
-        self,
-        guild_id: int,
-        duration_s: float = 10.0,
-        out_dir: Optional[Path] = None,
-    ) -> tuple[bool, str, list[RecordedTrack], dict[str, Any]]:
-        """Phase 0 spike: record per-person WAV files for `duration_s` seconds and return DAVE stats."""
-        if _voice_recv is None:
-            return False, "`discord-ext-voice-recv` is not installed.", [], {}
-        if not ensure_opus_loaded():
-            return False, "`libopus` could not be loaded (install `opus` via brew/apt).", [], {}
-
-        install_dave_recv_patch()
-        state = self._guilds.get(guild_id)
-        if not state or not state.voice_client or not state.voice_client.is_connected():
-            return False, "Jeff is not connected to a voice channel.", [], {}
-
-        vc = state.voice_client
-        if not isinstance(vc, _voice_recv.VoiceRecvClient):
-            return False, "Connected voice client is not a VoiceRecvClient — run `/voice leave` then `/voice join`.", [], {}
-        if vc.is_listening():
-            return False, "Already recording in this channel.", [], {}
-
-        # Make sure Jeff is not self-deafened so Discord forwards inbound audio packets
-        me_voice = vc.guild.me.voice if (vc.guild and vc.guild.me) else None
-        if me_voice and me_voice.self_deaf:
-            await vc.guild.change_voice_state(channel=vc.channel, self_deaf=False)
-            await asyncio.sleep(0.3)
-
-        sink = make_per_user_wave_sink()
-        save_dir = out_dir or (BASE_DIR / "recordings")
-        vc.listen(sink)
-        state.last_activity = time.monotonic()
-
-        try:
-            await asyncio.sleep(max(1.0, float(duration_s)))
-        finally:
-            stats = get_dave_recv_stats(vc)
-            stats["unknown_sink_packets"] = sink.unknown_packets
-            if vc.is_listening():
-                vc.stop_listening()
-            await asyncio.sleep(0.2)
-            state.last_activity = time.monotonic()
-
-        tracks = sink.export_wavs(save_dir)
-        logger.info("Phase 0 rectest finished: %d track(s), stats=%s", len(tracks), stats)
-        return True, f"Recorded {len(tracks)} speaker(s) over {duration_s:.0f}s.", tracks, stats
-
     async def leave(self, guild_id: int) -> tuple[bool, str]:
+        if self._on_leave_hook:
+            try:
+                await self._on_leave_hook(guild_id)
+            except Exception as e:
+                logger.debug(f"Voice on_leave hook warning: {e}")
+
         state = self._guilds.pop(guild_id, None)
         if not state:
             return False, "Not currently in a voice channel."
 
         if state.worker_task and not state.worker_task.done():
             state.worker_task.cancel()
+        self._drain_queue(state)
         try:
             if state.voice_client and state.voice_client.is_connected():
                 state.voice_client.stop()
@@ -210,6 +206,41 @@ class VoiceManager:
         except Exception as e:
             logger.debug(f"Voice disconnect cleanup warning: {e}")
         return True, "Left the voice channel."
+
+    @staticmethod
+    def _drain_queue(state: _GuildVoiceState) -> None:
+        while True:
+            try:
+                item = state.queue.get_nowait()
+            except asyncio.QueueEmpty:
+                break
+            if item and item.done_event and not item.done_event.is_set():
+                item.done_event.set()
+
+    def stop_speaking(self, guild_id: int) -> bool:
+        """Immediately interrupts Jeff's current speech and clears queued lines without stopping listening."""
+        state = self._guilds.get(guild_id)
+        if not state or not state.voice_client:
+            return False
+        self._drain_queue(state)
+        vc = state.voice_client
+        # VoiceRecvClient.stop() stops BOTH playing and listening; use stop_playing() so listening stays active!
+        if hasattr(vc, "stop_playing"):
+            vc.stop_playing()
+        else:
+            vc.stop()
+        state.last_activity = time.monotonic()
+        return True
+
+    async def play_chime(self, guild_id: int, wav_bytes: bytes) -> bool:
+        """Plays a short soft chime when idle (non-blocking, skipped if already speaking)."""
+        state = self._guilds.get(guild_id)
+        if not state or not state.voice_client or not state.voice_client.is_connected():
+            return False
+        if state.voice_client.is_playing() or not state.queue.empty():
+            return False
+        await state.queue.put(_PlaybackItem(audio_bytes=wav_bytes, audio_format="wav"))
+        return True
 
     async def _playback_loop(self, state: _GuildVoiceState) -> None:
         loop = asyncio.get_running_loop()
@@ -220,6 +251,8 @@ class VoiceManager:
                     break
                 vc = state.voice_client
                 if not vc or not vc.is_connected():
+                    if item.done_event:
+                        item.done_event.set()
                     continue
 
                 tmp_path = None
@@ -244,6 +277,8 @@ class VoiceManager:
                 except Exception as e:
                     logger.warning(f"Voice playback failed: {e}")
                 finally:
+                    if item.done_event and not item.done_event.is_set():
+                        item.done_event.set()
                     if tmp_path and os.path.exists(tmp_path):
                         try:
                             os.remove(tmp_path)
@@ -257,6 +292,8 @@ class VoiceManager:
         guild_id: int,
         text: str,
         voice: Optional[str] = None,
+        *,
+        wait_finished: bool = False,
     ) -> Optional[TTSResult]:
         """Synthesize and enqueue audio for a connected guild. Returns TTSResult or None."""
         state = self._guilds.get(guild_id)
@@ -269,7 +306,16 @@ class VoiceManager:
         if result is None:
             return None
         state.last_activity = time.monotonic()
-        await state.queue.put(result)
+        done_event = asyncio.Event() if wait_finished else None
+        await state.queue.put(
+            _PlaybackItem(
+                audio_bytes=result.audio_bytes,
+                audio_format=result.audio_format,
+                done_event=done_event,
+            )
+        )
+        if done_event is not None:
+            await done_event.wait()
         return result
 
     def speak_if_connected(self, guild_id: Optional[int], text: Optional[str]) -> None:

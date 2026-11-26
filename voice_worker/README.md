@@ -1,10 +1,13 @@
 # Jeff Bot — Windows RTX 5070 Ti Voice Worker
 
-Self-hosted **Chatterbox Turbo** (350M) FastAPI TTS server designed for your Windows gaming desktop (RTX 5070 Ti / 16 GB VRAM) paired with Jeff Bot running 24/7 on your CM3588.
+Self-hosted **Chatterbox Turbo** (350M TTS) + **Whisper large-v3-turbo** (STT) FastAPI worker designed for your Windows gaming desktop (RTX 5070 Ti / 16 GB VRAM) paired with Jeff Bot running 24/7 on your CM3588.
 
-- **Fast & Real:** Single-step decoder (~150–300ms on a 5070 Ti), ~2–3 GB VRAM, 0% GPU compute when idle.
+- **Fast & Real TTS (`POST /tts`):** Single-step Chatterbox Turbo decoder (~150–300ms on a 5070 Ti), ~2–3 GB VRAM, 0% GPU compute when idle.
+- **Fast Wake-Word STT (`POST /stt`):** `openai/whisper-large-v3-turbo` via `transformers` (~1.5–2 GB VRAM, ~200–400ms per phrase), prompted toward `"Jeff"` and your squad's names. Both models easily fit in 16 GB VRAM (~4–5 GB total).
 - **Zero-Shot Voice Cloning:** Drop any clean 5–15 second `.wav` or `.mp3` clip into `voices/` (e.g. `voices/jeff.wav`, `voices/caster.wav`, `voices/friend.wav`) — no transcript required, and Jeff Bot's `/voice set` discovers new clips live without a restart.
 - **Natural Reactions:** Supports `[laugh]`, `[chuckle]`, `[sigh]`, `[cough]` directly in speech text.
+- **Health (`GET /health`):** Reports both TTS and `stt_available` so Jeff Bot automatically turns listening on when your PC is up and self-deafens cleanly when your PC is off.
+- **Optional STT env vars:** `STT_ENABLED=true`, `STT_MODEL=openai/whisper-large-v3-turbo`, `STT_DEFAULT_PROMPT=...`.
 
 ## Windows Setup (RTX 50-Series / Blackwell)
 

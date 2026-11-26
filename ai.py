@@ -314,6 +314,8 @@ class DeepSeekClient:
         squad_context: str,
         asker: str,
         allow_paralinguistic: bool = False,
+        speaker_riot_id: Optional[str] = None,
+        history: Optional[list[tuple[str, str, str]]] = None,
     ) -> Optional[str]:
         """Short, natural spoken reply designed for Discord voice comms."""
         tag_hint = (
@@ -321,9 +323,24 @@ class DeepSeekClient:
             if allow_paralinguistic
             else ""
         )
+        identity_line = (
+            f"Their linked League Riot ID is '{speaker_riot_id}' "
+            f"(when they say 'I', 'me', or 'my', they mean {speaker_riot_id}).\n"
+            if speaker_riot_id
+            else ""
+        )
+        history_block = ""
+        if history:
+            turns = []
+            for h_speaker, h_q, h_a in history[-6:]:
+                turns.append(f"- {h_speaker}: {h_q}\n  Jeff: {h_a}")
+            history_block = "\nRecent voice conversation (for follow-up context):\n" + "\n".join(turns) + "\n"
+
         prompt = (
             f"You are on Discord voice comms with your friends while they play League. "
-            f"'{asker}' just asked you: {question}\n\n"
+            f"'{asker}' just asked you: {question}\n"
+            f"{identity_line}"
+            f"{history_block}\n"
             f"Squad tracked data:\n{squad_context}\n\n"
             "Reply in 1 to 3 short, conversational spoken sentences (under 55 words total). "
             "No markdown, no bullet points, no emojis—write exactly how you would say it out loud on mic."

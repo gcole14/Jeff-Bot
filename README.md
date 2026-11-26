@@ -9,6 +9,7 @@ Tracks your friend group's League of Legends stats, posts scheduled daily recaps
 - **Loading-Screen Gameplan (`/scout`)**: Scouts all 10 players in your live match (rank, WR, mastery, tilt/win streaks) and generates a 30-second gameplan + situational build tips.
 - **Auto Squad-Game Debriefs & Draft Builder (`/debrief`, `/comp`)**: Automatically posts a combined scoreboard + MVP + AI debrief whenever 2+ friends finish a game together, and builds synergistic 4-man comps from your real champ pools.
 - **Interactive Q&A (`/ask`) & Banter (`/roast`)**: Ask Coach Jeff anything grounded in your squad's real tracked stats.
+- **Hybrid Voice & Hands-Free "Hey Jeff" (`/voice`)**: Speaks out loud in Discord VC using your Windows RTX 5070 Ti Chatterbox Turbo worker (zero-shot voice cloning) with automatic CM3588 Kokoro fallback when your PC is off. When the PC worker is on, Jeff listens per-speaker in memory (DAVE E2EE compatible), transcribes via Whisper `large-v3-turbo`, responds to `"Hey Jeff"` with an 8-second follow-up window, resolves `"How did I do?"` via `/link`, and stops immediately on `"Jeff stop"` / `"Jeff shut up"`.
 - **SQLite Caching (`jeff_bot.db`)**: Caches immutable matches & timelines forever, deduplicates shared squad fetches, and tracks real LP deltas (`▲ +34 LP` / `▼ -18 LP`).
 
 ## Setup
@@ -58,5 +59,7 @@ python bot.py
 | `/versus player1 player2` | Everyone | 7-day head-to-head comparison |
 | `/damage` • `/live` • `/mastery` | Everyone | Damage leaderboard, live game check, top 10 mastery |
 | `/roster list \| add \| remove` | Everyone | Manage tracked Riot IDs live |
+| `/link player` | Everyone | Link your Discord user to your Riot ID (for `/build` and `"Hey Jeff, how did I do?"`) |
+| `/voice join \| leave \| listen on\|off \| say \| ask \| set \| autospeak \| status` | Everyone | Hybrid voice TTS & hands-free `"Hey Jeff"` listening |
 | `/daily` • `/weekly` • `/setriotkey` | Admin | Force recaps or hot-swap Riot API key |
 | `/status` • `/lolhelp` | Everyone | Bot health diagnostics & command list |

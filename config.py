@@ -84,6 +84,16 @@ VOICE_FALLBACK_VOICE = os.getenv("VOICE_FALLBACK_VOICE", "am_adam").strip()
 VOICE_MAX_CHARS = int(os.getenv("VOICE_MAX_CHARS", "450"))
 VOICE_IDLE_MINUTES = int(os.getenv("VOICE_IDLE_MINUTES", "15"))
 
+# --- Voice Listening / Wake Word ("Hey Jeff" via Desktop GPU Whisper /stt) ---
+VOICE_LISTEN_ENABLED = os.getenv("VOICE_LISTEN_ENABLED", "true").strip().lower() not in ("0", "false", "no")
+VOICE_LISTEN_SILENCE_S = float(os.getenv("VOICE_LISTEN_SILENCE_S", "0.7"))
+VOICE_LISTEN_MIN_S = float(os.getenv("VOICE_LISTEN_MIN_S", "0.4"))
+VOICE_LISTEN_MAX_S = float(os.getenv("VOICE_LISTEN_MAX_S", "15.0"))
+VOICE_LISTEN_FOLLOWUP_S = float(os.getenv("VOICE_LISTEN_FOLLOWUP_S", "8.0"))
+VOICE_LISTEN_HEALTH_INTERVAL_S = float(os.getenv("VOICE_LISTEN_HEALTH_INTERVAL_S", "30.0"))
+VOICE_LISTEN_RMS_THRESHOLD = int(os.getenv("VOICE_LISTEN_RMS_THRESHOLD", "280"))
+VOICE_LISTEN_CHIME = os.getenv("VOICE_LISTEN_CHIME", "true").strip().lower() not in ("0", "false", "no")
+
 # Optional cloud TTS fallback (ElevenLabs v4 Turbo)
 ELEVENLABS_API_KEY = os.getenv("ELEVENLABS_API_KEY", "").strip()
 ELEVENLABS_VOICE_ID = os.getenv("ELEVENLABS_VOICE_ID", "").strip()

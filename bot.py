@@ -87,6 +87,7 @@ from embeds import (
 )
 from patch_notes import PatchNotesFetcher
 from riot_api import RiotAPI
+from listen import STTClient, VoiceListenerManager
 from stats import StatsAggregator, RankTracker, resolve_riot_id
 from tts import HybridTTSClient
 from voice import VoiceManager, check_voice_prereqs
@@ -136,7 +137,19 @@ deepseek = DeepSeekClient()
 aggregator = StatsAggregator(riot, db)
 rank_tracker = RankTracker(aggregator, db)
 tts_client = HybridTTSClient()
+stt_client = STTClient()
 voice_manager = VoiceManager(tts_client)
+voice_listener = VoiceListenerManager(
+    voice_manager=voice_manager,
+    stt_client=stt_client,
+    deepseek=deepseek,
+    aggregator=aggregator,
+    db=db,
+)
+voice_manager.set_lifecycle_hooks(
+    on_join=voice_listener.on_voice_join,
+    on_leave=voice_listener.on_voice_leave,
+)
 scheduler = AsyncIOScheduler(timezone=TIMEZONE)
 
 
@@ -149,6 +162,7 @@ class JeffBot(commands.Bot):
     async def close(self) -> None:
         if scheduler.running:
             scheduler.shutdown(wait=False)
+        await voice_listener.close()
         await voice_manager.close()
         await assets.close()
         await patch_fetcher.close()
@@ -1337,17 +1351,27 @@ async def voice_join(interaction: discord.Interaction):
         )
         return
     await interaction.response.defer(ephemeral=True)
-    ok, msg = await voice_manager.join(user_voice.channel)
+    will_listen = await voice_listener.should_join_undeafened()
+    ok, msg = await voice_manager.join(user_voice.channel, self_deaf=not will_listen)
     if not ok:
         await interaction.followup.send(f"❌ {msg}", ephemeral=True)
         return
 
     status = await tts_client.get_status()
     backend_label = status["active_backend"]
+    listening_now = bool(interaction.guild_id and voice_listener.is_listening(interaction.guild_id))
+    if listening_now:
+        listen_label = 'ON (say "Hey Jeff")'
+    elif voice_listener.desired_enabled:
+        listen_label = "STANDBY (PC STT offline)"
+    else:
+        listen_label = "OFF (`/voice listen on`)"
+
     await interaction.followup.send(
         f"🎙️ {msg}\n"
         f"**Active TTS:** {backend_label} • **Voice:** `{tts_client.active_voice}` • "
-        f"**Auto-speak:** {'ON' if voice_manager.auto_speak else 'OFF'}",
+        f"**Auto-speak:** {'ON' if voice_manager.auto_speak else 'OFF'}\n"
+        f"**Listening:** {listen_label}",
         ephemeral=True,
     )
     if tts_client.has_any_backend and interaction.guild_id:
@@ -1386,7 +1410,8 @@ async def voice_say(interaction: discord.Interaction, text: str, voice: Optional
         if not user_voice or not user_voice.channel:
             await interaction.followup.send("❌ Jeff isn't in a voice channel—join one first or run `/voice join`.", ephemeral=True)
             return
-        ok, msg = await voice_manager.join(user_voice.channel)
+        will_listen = await voice_listener.should_join_undeafened()
+        ok, msg = await voice_manager.join(user_voice.channel, self_deaf=not will_listen)
         if not ok:
             await interaction.followup.send(f"❌ {msg}", ephemeral=True)
             return
@@ -1427,15 +1452,18 @@ async def voice_ask(interaction: discord.Interaction, question: str):
     if not voice_manager.is_connected(interaction.guild_id):
         user_voice = getattr(interaction.user, "voice", None)
         if user_voice and user_voice.channel:
-            await voice_manager.join(user_voice.channel)
+            will_listen = await voice_listener.should_join_undeafened()
+            await voice_manager.join(user_voice.channel, self_deaf=not will_listen)
 
     try:
         context = await aggregator.build_squad_context(days=14)
+        linked_riot_id = db.get_linked_riot_id(interaction.user.id)
         reply = await deepseek.answer_voice_question(
             question,
             context,
             interaction.user.display_name,
             allow_paralinguistic=tts_client.primary_supports_tags,
+            speaker_riot_id=linked_riot_id,
         )
         if not reply:
             await interaction.followup.send("❌ DeepSeek didn't answer — check bot logs.", ephemeral=True)
@@ -1474,87 +1502,55 @@ async def voice_autospeak(interaction: discord.Interaction, enabled: bool):
     await interaction.response.send_message(f"🔊 Auto-speak is now **{state_str}**", ephemeral=True)
 
 
-@voice_group.command(name="rectest", description="[Spike] Record everyone in VC to per-person WAV files to verify DAVE receive")
-@app_commands.describe(seconds="How many seconds to record (default 10, range 3-30)")
-async def voice_rectest(
-    interaction: discord.Interaction,
-    seconds: app_commands.Range[int, 3, 30] = 10,
-):
-    if not interaction.guild_id:
-        await interaction.response.send_message("❌ Run this inside a server.", ephemeral=True)
-        return
-
+@voice_group.command(name="listen", description='Toggle hands-free voice listening ("Hey Jeff")')
+@app_commands.describe(mode="Turn voice listening on or off")
+@app_commands.choices(
+    mode=[
+        app_commands.Choice(name="on", value="on"),
+        app_commands.Choice(name="off", value="off"),
+    ]
+)
+async def voice_listen(interaction: discord.Interaction, mode: app_commands.Choice[str]):
     await interaction.response.defer(ephemeral=True)
+    enabled = mode.value == "on"
+    res = await voice_listener.set_enabled(enabled, guild_id=interaction.guild_id)
+    stt = res["stt"]
 
-    if not voice_manager.is_connected(interaction.guild_id):
-        user_voice = getattr(interaction.user, "voice", None)
-        if not user_voice or not user_voice.channel:
-            await interaction.followup.send(
-                "❌ Hop into a voice channel first, then run `/voice rectest`.",
-                ephemeral=True,
-            )
-            return
-        ok, msg = await voice_manager.join(user_voice.channel, self_deaf=False)
-        if not ok:
-            await interaction.followup.send(f"❌ {msg}", ephemeral=True)
-            return
-        # Give DAVE MLS handshake ~1s to settle after fresh join
-        await asyncio.sleep(1.0)
-
-    ch = voice_manager.connected_channel(interaction.guild_id)
-    ch_name = ch.name if ch else "voice"
-    await interaction.edit_original_response(
-        content=f"🎙️ Recording everyone in **{ch_name}** for **{seconds}s** — start talking now!"
-    )
-
-    ok, msg, tracks, stats = await voice_manager.record_test(interaction.guild_id, duration_s=float(seconds))
-    if not ok:
-        await interaction.edit_original_response(content=f"❌ {msg}")
-        return
-
-    dave_line = (
-        f"DAVE v{stats.get('dave_protocol_version', '?')} "
-        f"(ready={stats.get('dave_ready')}, epoch={stats.get('dave_epoch')}) • "
-        f"ok={stats.get('ok', 0)} fail={stats.get('fail', 0)} "
-        f"nouser={stats.get('nouser', 0)} not_ready={stats.get('not_ready', 0)} "
-        f"bypass={stats.get('bypass', 0)} passthru={stats.get('passthru', 0)} "
-        f"opus_err={stats.get('opus_errors', 0)}"
-    )
-
-    if not tracks:
-        await interaction.edit_original_response(
-            content=(
-                f"⚠️ Finished {seconds}s recording in **{ch_name}**, but no speaker audio was captured.\n"
-                f"`{dave_line}`"
-            )
+    if not enabled:
+        await interaction.followup.send(
+            "🔇 Voice listening is now **OFF** (Jeff is self-deafened; typed `/voice` commands still work).",
+            ephemeral=True,
         )
         return
 
-    lines = [f"✅ **{msg}**", f"`{dave_line}`", ""]
-    files: list[discord.File] = []
-    total_attached_bytes = 0
-    max_total_bytes = 7_500_000  # stay safely under Discord's 8-10 MB attachment limit
-
-    for t in tracks:
-        size_kb = t.path.stat().st_size / 1024 if t.path.exists() else 0
-        lines.append(f"• **{t.display_name}** (`{t.user_id}`): {t.duration_s:.2f}s • {t.packets} packets • `{t.path.name}` ({size_kb:.0f} KB)")
-        if t.path.exists():
-            fsize = t.path.stat().st_size
-            if total_attached_bytes + fsize <= max_total_bytes:
-                files.append(discord.File(str(t.path), filename=t.path.name))
-                total_attached_bytes += fsize
-
-    if len(files) < len(tracks):
-        lines.append("\n*(Some WAVs exceeded Discord's attachment limit; all files are saved in `recordings/`.)*")
-
-    await interaction.edit_original_response(content="\n".join(lines), attachments=files)
+    if res["active"]:
+        await interaction.followup.send(
+            f'👂 Voice listening is **ON** — say **"Hey Jeff ..."** in voice chat (or **"Jeff stop"** to cut him off).\n'
+            f"STT: `{stt['detail']}`",
+            ephemeral=True,
+        )
+    elif stt["available"]:
+        await interaction.followup.send(
+            f'👂 Voice listening is **ON** and will activate as soon as Jeff joins a voice channel (`/voice join`).\n'
+            f"STT: `{stt['detail']}`",
+            ephemeral=True,
+        )
+    else:
+        await interaction.followup.send(
+            f"⚠️ Voice listening is **ON (standby)**, but PC STT isn't reachable right now (`{stt['detail']}`).\n"
+            "Jeff will stay deafened until your PC voice worker comes online, then start listening automatically.",
+            ephemeral=True,
+        )
 
 
 @voice_group.command(name="status", description="Show hybrid voice backend health (5070 Ti GPU vs CM3588 fallback)")
 async def voice_status(interaction: discord.Interaction):
     await interaction.response.defer(ephemeral=True)
     prereqs_ok, missing = check_voice_prereqs()
-    st = await tts_client.get_status()
+    st, listen_st = await asyncio.gather(
+        tts_client.get_status(),
+        voice_listener.get_status(interaction.guild_id),
+    )
     ch = voice_manager.connected_channel(interaction.guild_id) if interaction.guild_id else None
 
     embed = discord.Embed(
@@ -1571,11 +1567,33 @@ async def voice_status(interaction: discord.Interaction):
         value=f"**{st['active_backend']}**\nVoice: `{st['active_voice']}` • Auto-speak: `{'ON' if voice_manager.auto_speak else 'OFF'}`",
         inline=True,
     )
+
+    stt = listen_st["stt"]
+    if listen_st["active"]:
+        listen_state = '🟢 Active (say "Hey Jeff")'
+    elif listen_st["desired_enabled"] and stt["available"]:
+        listen_state = "🟡 Ready (join VC to listen)"
+    elif listen_st["desired_enabled"]:
+        listen_state = "🟡 Standby (PC STT offline)"
+    else:
+        listen_state = "⚪ Off (`/voice listen on`)"
+
+    stt_icon = "✅" if stt["available"] else ("⚪" if not stt["configured"] else "🔴")
+    dave_info = ""
+    if listen_st.get("dave"):
+        d = listen_st["dave"]
+        dave_info = f"\nDAVE v{d.get('dave_protocol_version', '?')}: `{d.get('ok', 0)}` decrypted, `{d.get('fail', 0)}` failed"
+    embed.add_field(
+        name='Voice Listening ("Hey Jeff")',
+        value=f"**Listener:** {listen_state}\n**STT:** {stt_icon} {stt['detail']}{dave_info}",
+        inline=False,
+    )
+
     p = st["primary"]
     f = st["fallback"]
     el = st["elevenlabs"]
     embed.add_field(
-        name="Backends (Failover Order)",
+        name="TTS Backends (Failover Order)",
         value=(
             f"1. **Desktop GPU:** {'✅' if p['ok'] else ('⚪' if not p['configured'] else '🔴')} {p['detail']}\n"
             f"2. **CM3588 Kokoro:** {'✅' if f['ok'] else ('⚪' if not f['configured'] else '🔴')} {f['detail']}\n"
@@ -1721,8 +1739,9 @@ async def slash_help(interaction: discord.Interaction):
         name="🎙️ Hybrid Voice",
         value=(
             "`/voice join` • `/voice leave` — Bring Jeff into your voice channel\n"
+            '`/voice listen on|off` — Hands-free **"Hey Jeff"** wake-word listening (say **"Jeff stop"** to interrupt)\n'
             "`/voice say text [voice]` • `/voice ask question` — Make Jeff talk or answer on mic\n"
-            "`/voice set voice` • `/voice autospeak` • `/voice status` — Swap cloned voices & check GPU/fallback"
+            "`/voice set voice` • `/voice autospeak` • `/voice status` — Swap cloned voices & check GPU/STT/fallback"
         ),
         inline=False,
     )
