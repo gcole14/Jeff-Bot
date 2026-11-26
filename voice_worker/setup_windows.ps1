@@ -27,7 +27,11 @@ Write-Host "Installing PyTorch with CUDA 12.8 (required for RTX 50-series Blackw
 & $pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu128
 
 Write-Host "Installing Chatterbox Turbo + FastAPI..." -ForegroundColor Yellow
+# --no-deps: chatterbox-tts pins torch==2.6.0 (no sm_120 support); its other deps are in requirements.txt
 & $pip install -r requirements.txt
+if ($LASTEXITCODE -ne 0) { throw "pip install -r requirements.txt failed" }
+& $pip install --no-deps chatterbox-tts==0.1.7
+if ($LASTEXITCODE -ne 0) { throw "chatterbox-tts install failed" }
 
 if (-not (Test-Path ".\voices")) {
     New-Item -ItemType Directory -Path ".\voices" | Out-Null

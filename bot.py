@@ -1,6 +1,7 @@
 import argparse
 import asyncio
 import logging
+import os
 import sys
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -99,6 +100,11 @@ logging.basicConfig(
     ],
 )
 logger = logging.getLogger(__name__)
+
+# VOICE_DEBUG=true surfaces discord.py's voice/DAVE (E2EE) handshake logs for troubleshooting silent playback
+if os.getenv("VOICE_DEBUG", "").strip().lower() in ("1", "true", "yes"):
+    for _name in ("discord.voice_state", "discord.voice_client", "discord.gateway"):
+        logging.getLogger(_name).setLevel(logging.DEBUG)
 
 
 def _update_env_var(env_path: Path, key: str, value: str) -> None:
@@ -1330,10 +1336,10 @@ async def voice_join(interaction: discord.Interaction):
             ephemeral=True,
         )
         return
-    await interaction.response.defer()
+    await interaction.response.defer(ephemeral=True)
     ok, msg = await voice_manager.join(user_voice.channel)
     if not ok:
-        await interaction.followup.send(f"❌ {msg}")
+        await interaction.followup.send(f"❌ {msg}", ephemeral=True)
         return
 
     status = await tts_client.get_status()
@@ -1341,7 +1347,8 @@ async def voice_join(interaction: discord.Interaction):
     await interaction.followup.send(
         f"🎙️ {msg}\n"
         f"**Active TTS:** {backend_label} • **Voice:** `{tts_client.active_voice}` • "
-        f"**Auto-speak:** {'ON' if voice_manager.auto_speak else 'OFF'}"
+        f"**Auto-speak:** {'ON' if voice_manager.auto_speak else 'OFF'}",
+        ephemeral=True,
     )
     if tts_client.has_any_backend and interaction.guild_id:
         greeting = (
@@ -1359,7 +1366,7 @@ async def voice_leave(interaction: discord.Interaction):
         return
     ok, msg = await voice_manager.leave(interaction.guild_id)
     prefix = "👋" if ok else "ℹ️"
-    await interaction.response.send_message(f"{prefix} {msg}")
+    await interaction.response.send_message(f"{prefix} {msg}", ephemeral=True)
 
 
 @voice_group.command(name="say", description="Make Jeff say something out loud in voice chat")
@@ -1372,32 +1379,34 @@ async def voice_say(interaction: discord.Interaction, text: str, voice: Optional
     if not interaction.guild_id:
         await interaction.response.send_message("❌ Run this inside a server.", ephemeral=True)
         return
-    await interaction.response.defer()
+    await interaction.response.defer(ephemeral=True)
 
     if not voice_manager.is_connected(interaction.guild_id):
         user_voice = getattr(interaction.user, "voice", None)
         if not user_voice or not user_voice.channel:
-            await interaction.followup.send("❌ Jeff isn't in a voice channel—join one first or run `/voice join`.")
+            await interaction.followup.send("❌ Jeff isn't in a voice channel—join one first or run `/voice join`.", ephemeral=True)
             return
         ok, msg = await voice_manager.join(user_voice.channel)
         if not ok:
-            await interaction.followup.send(f"❌ {msg}")
+            await interaction.followup.send(f"❌ {msg}", ephemeral=True)
             return
 
     if not tts_client.has_any_backend:
         await interaction.followup.send(
-            "⚠️ No TTS backend is configured yet. Set `VOICE_WORKER_URL`, `VOICE_FALLBACK_TTS_URL`, or `ELEVENLABS_API_KEY` in `.env`."
+            "⚠️ No TTS backend is configured yet. Set `VOICE_WORKER_URL`, `VOICE_FALLBACK_TTS_URL`, or `ELEVENLABS_API_KEY` in `.env`.",
+            ephemeral=True,
         )
         return
 
     res = await voice_manager.speak(interaction.guild_id, text, voice=voice)
     if not res:
-        await interaction.followup.send("❌ All configured TTS backends are unreachable right now — run `/voice status`.")
+        await interaction.followup.send("❌ All configured TTS backends are unreachable right now — run `/voice status`.", ephemeral=True)
         return
 
     await interaction.followup.send(
         f"🗣️ *\"{text[:200]}\"*\n"
-        f"`{res.backend}` • voice `{res.voice}` • `{res.latency_ms}ms`"
+        f"`{res.backend}` • voice `{res.voice}` • `{res.latency_ms}ms`",
+        ephemeral=True,
     )
 
 
@@ -1414,7 +1423,7 @@ async def voice_ask(interaction: discord.Interaction, question: str):
         await interaction.response.send_message("❌ Run this inside a server.", ephemeral=True)
         return
 
-    await interaction.response.defer()
+    await interaction.response.defer(ephemeral=True)
     if not voice_manager.is_connected(interaction.guild_id):
         user_voice = getattr(interaction.user, "voice", None)
         if user_voice and user_voice.channel:
@@ -1429,7 +1438,7 @@ async def voice_ask(interaction: discord.Interaction, question: str):
             allow_paralinguistic=tts_client.primary_supports_tags,
         )
         if not reply:
-            await interaction.followup.send("❌ DeepSeek didn't answer — check bot logs.")
+            await interaction.followup.send("❌ DeepSeek didn't answer — check bot logs.", ephemeral=True)
             return
 
         res = (
@@ -1440,9 +1449,9 @@ async def voice_ask(interaction: discord.Interaction, question: str):
         embed = build_ask_embed(question, reply, interaction.user.display_name)
         if res:
             embed.set_footer(text=f"Spoken via {res.backend} ({res.voice}) in {res.latency_ms}ms")
-        await interaction.followup.send(embed=embed)
+        await interaction.followup.send(embed=embed, ephemeral=True)
     except Exception as e:
-        await interaction.followup.send(f"❌ Voice ask failed: {e}")
+        await interaction.followup.send(f"❌ Voice ask failed: {e}", ephemeral=True)
 
 
 @voice_group.command(name="set", description="Switch Jeff's active cloned voice")
@@ -1454,7 +1463,7 @@ async def voice_set(interaction: discord.Interaction, voice: str):
         await interaction.response.send_message("❌ Provide a voice name.", ephemeral=True)
         return
     tts_client.active_voice = cleaned
-    await interaction.response.send_message(f"🎛️ Switched Jeff's voice to **`{cleaned}`**!")
+    await interaction.response.send_message(f"🎛️ Switched Jeff's voice to **`{cleaned}`**!", ephemeral=True)
 
 
 @voice_group.command(name="autospeak", description="Toggle whether Jeff automatically speaks /scout, /roast, /debrief & /ask in VC")
@@ -1462,7 +1471,7 @@ async def voice_set(interaction: discord.Interaction, voice: str):
 async def voice_autospeak(interaction: discord.Interaction, enabled: bool):
     voice_manager.auto_speak = enabled
     state_str = "ON — Jeff will speak `/scout`, `/roast`, `/debrief`, and `/ask` while in VC." if enabled else "OFF — Jeff will only speak on `/voice say` and `/voice ask`."
-    await interaction.response.send_message(f"🔊 Auto-speak is now **{state_str}**")
+    await interaction.response.send_message(f"🔊 Auto-speak is now **{state_str}**", ephemeral=True)
 
 
 @voice_group.command(name="status", description="Show hybrid voice backend health (5070 Ti GPU vs CM3588 fallback)")
