@@ -5,14 +5,31 @@ import os
 import shutil
 import tempfile
 import time
-from typing import Optional
+from pathlib import Path
+from typing import Any, Optional
 
 import discord
 
-from config import VOICE_ENABLED, VOICE_IDLE_MINUTES
+from config import BASE_DIR, VOICE_ENABLED, VOICE_IDLE_MINUTES
+from dave_recv import (
+    RecordedTrack,
+    ensure_opus_loaded,
+    get_dave_recv_stats,
+    install_dave_recv_patch,
+    make_per_user_wave_sink,
+)
 from tts import HybridTTSClient, TTSResult
 
 logger = logging.getLogger(__name__)
+
+try:
+    from discord.ext import voice_recv as _voice_recv
+except ImportError:
+    _voice_recv = None
+
+
+def voice_recv_available() -> bool:
+    return _voice_recv is not None
 
 
 def check_voice_prereqs() -> tuple[bool, list[str]]:
@@ -90,12 +107,16 @@ class VoiceManager:
         except asyncio.CancelledError:
             pass
 
-    async def join(self, channel: discord.VoiceChannel) -> tuple[bool, str]:
+    async def join(self, channel: discord.VoiceChannel, *, self_deaf: bool = False) -> tuple[bool, str]:
         if not self.enabled:
             return False, "Voice is disabled (`VOICE_ENABLED=false`)."
         ok, missing = check_voice_prereqs()
         if not ok:
             return False, "Missing voice prerequisites: " + ", ".join(missing)
+
+        ensure_opus_loaded()
+        if _voice_recv is not None:
+            install_dave_recv_patch()
 
         guild_id = channel.guild.id
         existing = self._guilds.get(guild_id)
@@ -103,6 +124,9 @@ class VoiceManager:
             if existing and existing.voice_client and existing.voice_client.is_connected():
                 if existing.voice_client.channel != channel:
                     await existing.voice_client.move_to(channel)
+                me_voice = channel.guild.me.voice if channel.guild.me else None
+                if me_voice is not None and bool(me_voice.self_deaf) != self_deaf:
+                    await channel.guild.change_voice_state(channel=existing.voice_client.channel, self_deaf=self_deaf)
                 existing.last_activity = time.monotonic()
                 return True, f"Moved to **{channel.name}**."
 
@@ -110,7 +134,11 @@ class VoiceManager:
             if channel.guild.voice_client is not None:
                 await channel.guild.voice_client.disconnect(force=True)
 
-            vc = await channel.connect(timeout=15.0, self_deaf=True)
+            connect_kwargs: dict[str, Any] = {"timeout": 15.0, "self_deaf": self_deaf}
+            if _voice_recv is not None:
+                connect_kwargs["cls"] = _voice_recv.VoiceRecvClient
+
+            vc = await channel.connect(**connect_kwargs)
             state = _GuildVoiceState(guild_id, vc)
             state.worker_task = asyncio.create_task(self._playback_loop(state))
             self._guilds[guild_id] = state
@@ -119,6 +147,54 @@ class VoiceManager:
         except Exception as e:
             logger.exception(f"Failed to join voice channel {channel}: {e}")
             return False, f"Could not join voice channel: {e}"
+
+    async def record_test(
+        self,
+        guild_id: int,
+        duration_s: float = 10.0,
+        out_dir: Optional[Path] = None,
+    ) -> tuple[bool, str, list[RecordedTrack], dict[str, Any]]:
+        """Phase 0 spike: record per-person WAV files for `duration_s` seconds and return DAVE stats."""
+        if _voice_recv is None:
+            return False, "`discord-ext-voice-recv` is not installed.", [], {}
+        if not ensure_opus_loaded():
+            return False, "`libopus` could not be loaded (install `opus` via brew/apt).", [], {}
+
+        install_dave_recv_patch()
+        state = self._guilds.get(guild_id)
+        if not state or not state.voice_client or not state.voice_client.is_connected():
+            return False, "Jeff is not connected to a voice channel.", [], {}
+
+        vc = state.voice_client
+        if not isinstance(vc, _voice_recv.VoiceRecvClient):
+            return False, "Connected voice client is not a VoiceRecvClient — run `/voice leave` then `/voice join`.", [], {}
+        if vc.is_listening():
+            return False, "Already recording in this channel.", [], {}
+
+        # Make sure Jeff is not self-deafened so Discord forwards inbound audio packets
+        me_voice = vc.guild.me.voice if (vc.guild and vc.guild.me) else None
+        if me_voice and me_voice.self_deaf:
+            await vc.guild.change_voice_state(channel=vc.channel, self_deaf=False)
+            await asyncio.sleep(0.3)
+
+        sink = make_per_user_wave_sink()
+        save_dir = out_dir or (BASE_DIR / "recordings")
+        vc.listen(sink)
+        state.last_activity = time.monotonic()
+
+        try:
+            await asyncio.sleep(max(1.0, float(duration_s)))
+        finally:
+            stats = get_dave_recv_stats(vc)
+            stats["unknown_sink_packets"] = sink.unknown_packets
+            if vc.is_listening():
+                vc.stop_listening()
+            await asyncio.sleep(0.2)
+            state.last_activity = time.monotonic()
+
+        tracks = sink.export_wavs(save_dir)
+        logger.info("Phase 0 rectest finished: %d track(s), stats=%s", len(tracks), stats)
+        return True, f"Recorded {len(tracks)} speaker(s) over {duration_s:.0f}s.", tracks, stats
 
     async def leave(self, guild_id: int) -> tuple[bool, str]:
         state = self._guilds.pop(guild_id, None)

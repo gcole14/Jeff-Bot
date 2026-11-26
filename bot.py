@@ -1474,6 +1474,82 @@ async def voice_autospeak(interaction: discord.Interaction, enabled: bool):
     await interaction.response.send_message(f"🔊 Auto-speak is now **{state_str}**", ephemeral=True)
 
 
+@voice_group.command(name="rectest", description="[Spike] Record everyone in VC to per-person WAV files to verify DAVE receive")
+@app_commands.describe(seconds="How many seconds to record (default 10, range 3-30)")
+async def voice_rectest(
+    interaction: discord.Interaction,
+    seconds: app_commands.Range[int, 3, 30] = 10,
+):
+    if not interaction.guild_id:
+        await interaction.response.send_message("❌ Run this inside a server.", ephemeral=True)
+        return
+
+    await interaction.response.defer(ephemeral=True)
+
+    if not voice_manager.is_connected(interaction.guild_id):
+        user_voice = getattr(interaction.user, "voice", None)
+        if not user_voice or not user_voice.channel:
+            await interaction.followup.send(
+                "❌ Hop into a voice channel first, then run `/voice rectest`.",
+                ephemeral=True,
+            )
+            return
+        ok, msg = await voice_manager.join(user_voice.channel, self_deaf=False)
+        if not ok:
+            await interaction.followup.send(f"❌ {msg}", ephemeral=True)
+            return
+        # Give DAVE MLS handshake ~1s to settle after fresh join
+        await asyncio.sleep(1.0)
+
+    ch = voice_manager.connected_channel(interaction.guild_id)
+    ch_name = ch.name if ch else "voice"
+    await interaction.edit_original_response(
+        content=f"🎙️ Recording everyone in **{ch_name}** for **{seconds}s** — start talking now!"
+    )
+
+    ok, msg, tracks, stats = await voice_manager.record_test(interaction.guild_id, duration_s=float(seconds))
+    if not ok:
+        await interaction.edit_original_response(content=f"❌ {msg}")
+        return
+
+    dave_line = (
+        f"DAVE v{stats.get('dave_protocol_version', '?')} "
+        f"(ready={stats.get('dave_ready')}, epoch={stats.get('dave_epoch')}) • "
+        f"ok={stats.get('ok', 0)} fail={stats.get('fail', 0)} "
+        f"nouser={stats.get('nouser', 0)} not_ready={stats.get('not_ready', 0)} "
+        f"bypass={stats.get('bypass', 0)} passthru={stats.get('passthru', 0)} "
+        f"opus_err={stats.get('opus_errors', 0)}"
+    )
+
+    if not tracks:
+        await interaction.edit_original_response(
+            content=(
+                f"⚠️ Finished {seconds}s recording in **{ch_name}**, but no speaker audio was captured.\n"
+                f"`{dave_line}`"
+            )
+        )
+        return
+
+    lines = [f"✅ **{msg}**", f"`{dave_line}`", ""]
+    files: list[discord.File] = []
+    total_attached_bytes = 0
+    max_total_bytes = 7_500_000  # stay safely under Discord's 8-10 MB attachment limit
+
+    for t in tracks:
+        size_kb = t.path.stat().st_size / 1024 if t.path.exists() else 0
+        lines.append(f"• **{t.display_name}** (`{t.user_id}`): {t.duration_s:.2f}s • {t.packets} packets • `{t.path.name}` ({size_kb:.0f} KB)")
+        if t.path.exists():
+            fsize = t.path.stat().st_size
+            if total_attached_bytes + fsize <= max_total_bytes:
+                files.append(discord.File(str(t.path), filename=t.path.name))
+                total_attached_bytes += fsize
+
+    if len(files) < len(tracks):
+        lines.append("\n*(Some WAVs exceeded Discord's attachment limit; all files are saved in `recordings/`.)*")
+
+    await interaction.edit_original_response(content="\n".join(lines), attachments=files)
+
+
 @voice_group.command(name="status", description="Show hybrid voice backend health (5070 Ti GPU vs CM3588 fallback)")
 async def voice_status(interaction: discord.Interaction):
     await interaction.response.defer(ephemeral=True)

@@ -1,6 +1,7 @@
 discord.py>=2.7.0
 PyNaCl>=1.5.0
 davey>=0.1.7,<0.2  # 0.2.x breaks DAVE with discord.py 2.7.1 -> silent bot (Rapptz/discord.py#10548)
+discord-ext-voice-recv>=0.5.2a179
 aiohttp>=3.9.0
 apscheduler>=3.10.0
 python-dotenv>=1.0.0

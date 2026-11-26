@@ -16,3 +16,4 @@ venv/
 *.egg-info/
 dist/
 voice_worker/voices/
+recordings/
