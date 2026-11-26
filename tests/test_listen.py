@@ -12,6 +12,7 @@ from aiohttp import web
 from ai import DeepSeekClient, VOICE_SYSTEM_PROMPT
 from stats import StatsAggregator, _format_summoner_spells
 from listen import (
+    CompletedPhrase,
     DISCORD_BYTES_PER_SEC,
     PhraseSegmenter,
     STTClient,
@@ -517,5 +518,116 @@ def test_voice_listener_passes_live_match_and_survives_squad_context_error():
         # Second call within 30s hits the live match cache
         await mgr._answer_and_speak(gstate, 42, "Grant", "Is Pantheon a good jungler?")
         assert live_calls == 1
+        assert mgr.memory.is_followup_active(1, 42) is False
 
     asyncio.run(_run())
+
+
+def test_voice_listener_does_not_reopen_followup_after_response():
+    async def _run():
+        transcripts = iter([
+            "Hey Jeff, what should I build?",
+            "Okay cool, I'm going top now.",  # Should be ignored (no post-response loop)
+            "Hey Jeff",                       # Bare wake word opens one-shot window
+            "What about second item?",        # Consumes one-shot window
+            "Nice, thanks guys.",             # Should be ignored again
+        ])
+        asked: list[tuple[str, list]] = []
+        spoken: list[str] = []
+        chimes: list[int] = []
+
+        class FakeSTT:
+            cached_available = True
+
+            async def transcribe(self, wav_bytes, prompt=None):
+                return next(transcripts)
+
+        class FakeAggregator:
+            def get_roster(self):
+                return []
+
+            async def build_squad_context(self, days=14):
+                return ""
+
+            async def build_live_match_context(self, speaker_riot_id=None):
+                return "", []
+
+            async def get_current_patch(self):
+                return "15.23"
+
+        class FakeDeepSeek:
+            is_configured = True
+
+            async def answer_voice_question(self, question, squad_context, asker, **kwargs):
+                asked.append((question, list(kwargs.get("history") or [])))
+                return f"Reply to: {question}"
+
+        class FakeVoiceManager:
+            tts = SimpleNamespace(primary_supports_tags=False)
+
+            def connected_channel(self, gid):
+                return None
+
+            async def play_chime(self, gid, wav_bytes):
+                chimes.append(gid)
+                return True
+
+            async def speak(self, gid, text, wait_finished=True):
+                spoken.append(text)
+                return SimpleNamespace(backend="test")
+
+        mgr = VoiceListenerManager(
+            voice_manager=FakeVoiceManager(),
+            stt_client=FakeSTT(),  # type: ignore
+            deepseek=FakeDeepSeek(),
+            aggregator=FakeAggregator(),
+            db=None,
+            enabled=True,
+            chime_enabled=True,
+        )
+        from listen import _GuildListenState
+        gstate = _GuildListenState(1)
+        pcm = _tone_frame_48k_stereo() * 25
+
+        async def _send_phrase():
+            phrase = CompletedPhrase(user_id=42, display_name="Grant", pcm=pcm, duration_s=0.5)
+            await mgr._handle_phrase(gstate, phrase)
+            # Let any spawned _answer_and_speak task finish
+            await asyncio.sleep(0.05)
+
+        # 1. Explicit wake word + question -> answers, leaves follow-up CLOSED
+        await _send_phrase()
+        assert len(asked) == 1
+        assert asked[0][0] == "what should I build?"
+        assert mgr.memory.is_followup_active(1, 42) is False
+
+        # 2. Normal chatter right after response -> ignored (no loop)
+        await _send_phrase()
+        assert len(asked) == 1
+        assert len(spoken) == 1
+
+        # 3. Bare "Hey Jeff" -> chimes and opens one-shot pending window
+        await _send_phrase()
+        assert len(asked) == 1
+        assert mgr.memory.is_followup_active(1, 42) is True
+
+        # 4. Spoken question consumes window immediately and answers with history
+        await _send_phrase()
+        assert len(asked) == 2
+        assert asked[1][0] == "What about second item?"
+        assert len(asked[1][1]) == 1  # prior turn kept in memory
+        assert mgr.memory.is_followup_active(1, 42) is False
+
+        # 5. Chatter after the second response -> ignored again
+        await _send_phrase()
+        assert len(asked) == 2
+        assert len(spoken) == 2
+        assert len(chimes) == 2
+
+    asyncio.run(_run())
+
+
+def test_followup_window_disabled_when_non_positive():
+    mem = VoiceConversationMemory(followup_s=0.0)
+    mem.open_followup(guild_id=1, user_id=42, now=100.0)
+    assert mem.is_followup_active(1, 42, now=100.0) is False

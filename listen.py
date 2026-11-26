@@ -7,7 +7,7 @@ Pipeline:
     -> 16 kHz mono WAV (in-memory)
     -> Desktop GPU Voice Worker POST /stt (Whisper large-v3-turbo, health cached 30s)
     -> Stop-phrase check ("Jeff stop" / "Jeff shut up") -> instant playback cutoff
-    -> Wake-word check ("Hey Jeff" / "Yo Jeff" / "Okay Jeff" / "Jeff") or 8s follow-up window
+    -> Wake-word check ("Hey Jeff" / "Yo Jeff" / "Okay Jeff" / "Jeff"), with a one-shot wait after bare "Hey Jeff"
     -> DeepSeek answer_voice_question (with linked Riot ID + short conversation memory)
     -> VoiceManager.speak (existing TTS pipeline)
 
@@ -409,7 +409,7 @@ class PhraseSegmenter:
 # -------------------------------------------------------------------------
 
 class VoiceConversationMemory:
-    """Short per-guild voice Q&A memory plus per-speaker 8-second follow-up window."""
+    """Short per-guild voice Q&A memory plus one-shot wait window after a bare wake word."""
 
     def __init__(self, *, max_turns: int = 6, history_ttl_s: float = 600.0, followup_s: float = VOICE_LISTEN_FOLLOWUP_S):
         self.max_turns = max_turns
@@ -432,6 +432,9 @@ class VoiceConversationMemory:
         return [(spk, q, a) for (t, spk, q, a) in dq if t >= cutoff]
 
     def open_followup(self, guild_id: int, user_id: int, now: Optional[float] = None) -> None:
+        if self.followup_s <= 0:
+            self._followup.pop(guild_id, None)
+            return
         ts = time.monotonic() if now is None else now
         self._followup[guild_id] = (user_id, ts + self.followup_s)
 
@@ -902,7 +905,7 @@ class VoiceListenerManager:
             self.voice_manager.stop_speaking(gstate.guild_id)
             return
 
-        # 2. Wake word or active 8-second follow-up window for the same speaker
+        # 2. Wake word, or one-shot pending window after a bare "Hey Jeff"
         extracted = extract_wake_question(text)
         is_followup = False
         if extracted is not None:
@@ -924,10 +927,14 @@ class VoiceListenerManager:
         if not is_followup and self.chime_enabled:
             await self.voice_manager.play_chime(gstate.guild_id, generate_wake_chime_wav())
 
-        # Bare "Hey Jeff" with no question yet -> open the 8s follow-up window and wait
+        # Bare "Hey Jeff" with no question yet -> wait briefly for the spoken question
         if not question:
             self.memory.open_followup(gstate.guild_id, phrase.user_id)
             return
+
+        # Close any pending bare-wake window once a question is received so Jeff
+        # requires a fresh wake word after responding instead of looping.
+        self.memory.clear_followup(gstate.guild_id)
 
         if not self.deepseek.is_configured:
             logger.warning("DeepSeek not configured; skipping voice answer.")
@@ -967,11 +974,7 @@ class VoiceListenerManager:
                     return
 
                 self.memory.add_exchange(gstate.guild_id, display_name, question, reply)
-                # Keep follow-up open while Jeff talks, then give a full 8s after he finishes
-                self.memory.open_followup(gstate.guild_id, user_id)
-                res = await self.voice_manager.speak(gstate.guild_id, reply, wait_finished=True)
-                if res is not None:
-                    self.memory.open_followup(gstate.guild_id, user_id)
+                await self.voice_manager.speak(gstate.guild_id, reply, wait_finished=True)
             except asyncio.CancelledError:
                 raise
             except Exception as e:
